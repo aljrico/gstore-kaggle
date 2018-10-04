@@ -1,0 +1,158 @@
+---
+title: "gstore-eda"
+author: "Alejandro Jiménez Rico"
+date: "28 September 2018"
+output: html_document
+---
+
+
+In today's competition we a’re challenged to analyze a Google Merchandise Store (also known as GStore, where Google swag is sold) customer dataset to predict revenue per customer.
+
+Finally, we have a competition more R-oriented. Our moment to shine. 
+
+In this notebook, I'll try to explore the given dataset and make some inferences along the way in order to build a baseline model to get started.
+
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(jsonlite)
+library(lubridate)
+
+library(viridis)
+library(harrypotter)
+```
+
+
+# Retrieving Data
+
+As always, we have to start by taking a look at the actual data. 
+```{r}
+test  <- fread("data/test.csv")
+test %>% glimpse()
+
+rm(test)
+gc()
+```
+
+Do you notice those weird patterns in the columns `device`, `geoNetwork`, `totals` and `trafficSource`? This isn't suppose to be a `.csv` file. It has tree-developed features that we need to flatten out.
+
+
+```{r}
+parse <- . %>% 
+  str_c(., collapse = ",") %>% 
+  str_c("[", ., "]") %>% 
+  fromJSON(flatten = T)
+
+flatten <- . %>% 
+  bind_cols(parse(.$device)) %>%
+  bind_cols(parse(.$geoNetwork)) %>% 
+  bind_cols(parse(.$trafficSource)) %>% 
+  bind_cols(parse(.$totals)) %>% 
+  select(-device, -geoNetwork, -trafficSource, -totals)
+
+
+train <- read_csv("data/train.csv") %>% flatten() %>% data.table()
+test  <- read_csv("data/test.csv") %>%  flatten() %>% data.table()
+```
+
+
+```{r}
+glimpse(train)
+glimpse(test)
+```
+
+
+# Defining the Target
+
+In this competition, our task is - as usually - to predict a target $T$. This target is defined as the natural log of the sum of all transactions $t$ per user $u$. which can be written down as:
+
+$$T_u = ln\left(\sum_{i = 1}^N t_u\right)$$
+
+Since we are going to be interested in the natural log of sum of all transactions of the user (target), we can visualize its distribution from those who have spent some money, if any.
+
+```{r}
+train %>%
+	select(fullVisitorId,transactionRevenue) %>% 
+	na.omit() %>% 
+	group_by(fullVisitorId) %>% 
+	summarise(logRevenue = log(sum(as.numeric(transactionRevenue)))) %>% 
+	ggplot(aes(x = logRevenue)) +
+	geom_histogram(aes(y = 100*..count../sum(..count..)), colour = "black", fill = viridis(3)[[2]], bins = 50) +
+	theme_minimal() +
+	xlab("Target") +
+	ylab("(%)")
+```
+
+Note that we are - fairly - assuming that the missing values in the `transactionRevenue` column are simply an absence of transactions. Which is $0$ revenue.
+
+```{r}
+train[, transactionRevenue := ifelse(is.na(transactionRevenue), 0, transactionRevenue)]
+```
+
+
+> The Pareto principle - also known as the 80/20 rule - states that, for many events, roughly 80% of the effects come from 20% of the causes. And it is an axiom of business management that _80% of sales come from 20% of clients_.
+
+
+Reality is, most people we have recorded in the dataset don't end up buying things in the store. 
+
+```{r}
+train %>% 
+	select(fullVisitorId,transactionRevenue) %>% 
+	group_by(fullVisitorId) %>% 
+	summarise(logRevenue = (sum(as.numeric(transactionRevenue)))) %>% 
+	mutate(logRevenue = ifelse(logRevenue == 0, "No", "Yes")) %>% 
+	ggplot(aes(x = logRevenue,
+						 fill = logRevenue)) +
+	geom_bar(aes(y = 100*..count../sum(..count..)), 
+					 colour = "black"
+					 ) +
+	geom_text(aes(label = scales::percent(..count../sum(..count..)),
+								y= 100*..count../sum(..count..) ), 
+						stat= "count", 
+						vjust = -.5) +
+	theme_minimal() +
+	xlab("Did they spend any money whatsoever?") +
+	ylab("(%)") +
+	labs(fill = "")
+```
+
+What these numbers are suggesting is that, before even considering predicting _how much_ money a customer is going to spend, we should begin by thinking _whether_ a customer is going to spend _any money_ whatsoever. 
+
+This detail is crucial because it forces us to not start by constructing a _regression model_, but a _classification_ one.
+
+```{r}
+train %>% 
+	group_by(fullVisitorId, date) %>% 
+	summarise(did_she_spend = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+	group_by(date) %>% 
+	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% head() %>% 
+	ggplot(aes(x = ymd(date), y = payer_perc)) +
+	geom_line()
+```
+
+
+
+```{r}
+df <- train %>% 
+	group_by(fullVisitorId) %>% 
+	summarise(Revenue = (sum(as.numeric(transactionRevenue)))) %>% 
+	arrange(desc(Revenue)) %>% 
+	mutate(cs_Revenue = cumsum(Revenue)) %>% 
+	mutate(ind = row_number()) %>%
+	select(ind, cs_Revenue)
+
+df %>% 
+	na.omit() %>% 
+	ggplot(aes(x = (ind), y = (cs_Revenue))) +
+	geom_line(colour = "black", size = 1.2) +
+	geom_area(fill = viridis(10)[[5]]) +
+	# scale_x_log10() +
+	scale_x_continuous(limits = c(0, 3500)) +
+	ylab("Accumulated Revenue") +
+	xlab("Index of top payers ") +
+	theme_minimal()
+	
+```
+
+
