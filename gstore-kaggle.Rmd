@@ -2,7 +2,13 @@
 title: "gstore-eda"
 author: "Alejandro Jiménez Rico"
 date: "28 September 2018"
-output: html_document
+output:
+ html_document:
+    fig_width: 10
+    fig_height: 7
+    toc: yes
+    number_sections : yes
+    code_folding: show
 ---
 
 
@@ -39,21 +45,26 @@ Do you notice those weird patterns in the columns `device`, `geoNetwork`, `total
 
 
 ```{r}
-parse <- . %>% 
+
+flatten <- function(x){
+	
+	pre_flatten <- . %>% 
   str_c(., collapse = ",") %>% 
   str_c("[", ., "]") %>% 
-  fromJSON(flatten = T)
-
-flatten <- . %>% 
-  bind_cols(parse(.$device)) %>%
-  bind_cols(parse(.$geoNetwork)) %>% 
-  bind_cols(parse(.$trafficSource)) %>% 
-  bind_cols(parse(.$totals)) %>% 
-  select(-device, -geoNetwork, -trafficSource, -totals)
+  fromJSON(flatten = T)	
+	
+	x %>% 
+  bind_cols(pre_flatten(.$device)) %>%
+  bind_cols(pre_flatten(.$geoNetwork)) %>% 
+  bind_cols(pre_flatten(.$trafficSource)) %>% 
+  bind_cols(pre_flatten(.$totals)) %>% 
+  select(-device, -geoNetwork, -trafficSource, -totals)	%>% 
+	return()
+}
 
 
 train <- read_csv("data/train.csv") %>% flatten() %>% data.table()
-test  <- read_csv("data/test.csv") %>%  flatten() %>% data.table()
+test  <- read_csv("data/test.csv")  %>% flatten() %>% data.table()
 ```
 
 
@@ -61,6 +72,49 @@ test  <- read_csv("data/test.csv") %>%  flatten() %>% data.table()
 glimpse(train)
 glimpse(test)
 ```
+
+
+After flattening the columns, we can spot _a lot_ of hidden missing values. And I mean missing by those `not available in demo dataset` and similars. Make no mistake, those are missing values also and should be treated as that.
+
+```{r}
+hidden_na <- function(x) x %in% c("not available in demo dataset", "(not provided)",
+                                  "(not set)", "<NA>", "unknown.unknown",  "(none)")
+
+train <- train %>%  mutate_all(funs(ifelse(hidden_na(.), NA, .))) %>% data.table()
+test  <- test  %>%  mutate_all(funs(ifelse(hidden_na(.), NA, .))) %>% data.table()
+```
+
+```{r nas1, result='asis', echo=FALSE}
+train %>% 
+	summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
+	gather(key = "feature", value = "missing_pct") %>% 
+  ggplot(aes(x = reorder(feature,missing_pct), 
+  					 y = missing_pct
+  					 )
+  			 ) +
+  geom_bar(stat = "identity", 
+  				 colour = "black",
+  				 fill = viridis(3)[[2]]) +
+  labs(y = "Missing Values (%)", x = "Features") +
+  coord_flip() +
+  theme_minimal()
+```
+```{r}
+train %>% 
+	summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
+	gather(key = "feature", value = "missing_pct") %>% 
+  ggplot(aes(x = reorder(feature,missing_pct), 
+  					 y = missing_pct
+  					 )
+  			 ) +
+  geom_bar(stat = "identity", 
+  				 colour = "black",
+  				 fill = viridis(3)[[2]]) +
+  labs(y = "Missing Values (%)", x = "Features") +
+  coord_flip() +
+  theme_minimal()
+```
+
 
 
 # Defining the Target
