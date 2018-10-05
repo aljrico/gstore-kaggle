@@ -7,7 +7,7 @@ output:
     fig_width: 10
     fig_height: 7
     toc: yes
-    number_sections : yes
+    number_sections : no
     code_folding: show
 ---
 
@@ -73,6 +73,7 @@ glimpse(train)
 glimpse(test)
 ```
 
+# Broad Missing Values Treatment
 
 After flattening the columns, we can spot _a lot_ of hidden missing values. And I mean missing by those `not available in demo dataset` and similars. Make no mistake, those are missing values also and should be treated as that.
 
@@ -88,6 +89,7 @@ test  <- test  %>%  mutate_all(funs(ifelse(hidden_na(.), NA, .))) %>% data.table
 train %>% 
 	summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
 	gather(key = "feature", value = "missing_pct") %>% 
+	filter(missing_pct > 0) %>% 
   ggplot(aes(x = reorder(feature,missing_pct), 
   					 y = missing_pct
   					 )
@@ -95,35 +97,22 @@ train %>%
   geom_bar(stat = "identity", 
   				 colour = "black",
   				 fill = viridis(3)[[2]]) +
+		geom_text(aes(label = paste0(round(missing_pct,1), " (%)"),
+								y= missing_pct),
+						vjust = +1.5) +
   labs(y = "Missing Values (%)", x = "Features") +
   coord_flip() +
   theme_minimal()
 ```
-```{r}
-train %>% 
-	summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
-	gather(key = "feature", value = "missing_pct") %>% 
-  ggplot(aes(x = reorder(feature,missing_pct), 
-  					 y = missing_pct
-  					 )
-  			 ) +
-  geom_bar(stat = "identity", 
-  				 colour = "black",
-  				 fill = viridis(3)[[2]]) +
-  labs(y = "Missing Values (%)", x = "Features") +
-  coord_flip() +
-  theme_minimal()
-```
-
 
 
 # Defining the Target
 
-In this competition, our task is - as usually - to predict a target $T$. This target is defined as the natural log of the sum of all transactions $t$ per user $u$. which can be written down as:
+In this competition, our task is - as awlays - to predict a target $T$. The target today is defined as the natural log of the sum of all transactions ($t$) per user ($u$). which can be written down as:
 
 $$T_u = ln\left(\sum_{i = 1}^N t_u\right)$$
 
-Since we are going to be interested in the natural log of sum of all transactions of the user (target), we can visualize its distribution from those who have spent some money, if any.
+We can visualize its distribution (from those who have spent some money).
 
 ```{r}
 train %>%
@@ -138,15 +127,15 @@ train %>%
 	ylab("(%)")
 ```
 
-Note that we are - fairly - assuming that the missing values in the `transactionRevenue` column are simply an absence of transactions. Which is $0$ revenue.
+It looks quite beatiful, but please note that we are - quite fairly - assuming that the missing values in the `transactionRevenue` column are simply an absence of transactions. Which is $0$ revenue.
 
 ```{r}
 train[, transactionRevenue := ifelse(is.na(transactionRevenue), 0, transactionRevenue)]
+test[,  transactionRevenue := ifelse(is.na(transactionRevenue), 0, transactionRevenue)]
 ```
 
 
-> The Pareto principle - also known as the 80/20 rule - states that, for many events, roughly 80% of the effects come from 20% of the causes. And it is an axiom of business management that _80% of sales come from 20% of clients_.
-
+> The Pareto principle - also known as the 80/20 rule - states that, for many events, roughly 80% of the effects come from 20% of the causes. And it is a consequent axiom of business management that _80% of sales come from 20% of clients_.
 
 Reality is, most people we have recorded in the dataset don't end up buying things in the store. 
 
@@ -175,15 +164,93 @@ What these numbers are suggesting is that, before even considering predicting _h
 
 This detail is crucial because it forces us to not start by constructing a _regression model_, but a _classification_ one.
 
+## Time Dependence of the Target variable
+
 ```{r}
 train %>% 
 	group_by(fullVisitorId, date) %>% 
 	summarise(did_she_spend = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
 	group_by(date) %>% 
-	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% head() %>% 
+	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% 
 	ggplot(aes(x = ymd(date), y = payer_perc)) +
-	geom_line()
+	geom_line(colour = "black", size = 0.5) +
+	geom_smooth(method = "loess",
+							formula = y ~ x,
+							level = 0.9,
+							colour = viridis(3)[[2]], 
+							size = 1.5) +
+	ylab("(%) of Customers that bought something.") +
+	xlab("Date")
 ```
+
+What insights can we draw from this plot? First and foremost, we can not spot an obvious trend. The usual percentage bounces between $1\%$ and $2\%$, we might get suspicious if the result of our model outputs something away from that. It seems that the store was somehow inefficient at the end of 2016 and beginning of 2017, and it surely suffered major changes that improved conversion and the tendency dramatically. I'd wonder, however, what the hell happened in April 2017. That is impressive.
+
+What I really find interesting are the periodicity of some of the bounces. If you take a closer look at the plot, you can see that it has periodic spikes. I'd say that those spikes have to do with the day of the week.
+
+```{r}
+train %>% 
+	mutate(date = date %>% ymd()) %>% 
+	group_by(fullVisitorId, date) %>% 
+	summarise(did_she_spend = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+	mutate(date = date %>% wday(label = TRUE, abbr = FALSE)) %>% 
+	group_by(date) %>% 
+	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% 
+	ggplot(aes(x = date,
+						 y = payer_perc)) +
+	geom_col(colour = "black",
+					 fill = viridis(3)[[2]])
+```
+
+As I suspected, something happens during the weekends. My shot is that more "casual" people enter wandering at the store, just for browsing out of curiosity without any intention of buying anything in the first place. Yes, some people might end up buying something, but I expected that even though the gross number of customers increase on weekends, the percentage of them that buy something would drecrease.
+
+This can be used as a feature. Since we should expect that a weekend customer is less likely to buy anything.
+
+```{r}
+train_class <- train %>%
+	mutate(date = ymd(date)) %>% 
+	group_by(fullVisitorId, date) %>% 
+	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+	mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)) %>% 
+	data.table()
+```
+
+# Classification Model
+
+```{r}
+fn <- funs(mean, sd, min, max, sum, n_distinct, kurtosis, skewness, .args = list(na.rm = TRUE))
+
+```
+
+
+```{r}
+train_class <- train %>% 
+	mutate(date = ymd(date)) %>% 
+	group_by(fullVisitorId, date) %>% 
+	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1)))
+```
+
+## Feature Engineering
+
+Based on our EDA, we can fairly construct these features
+
+```{r}
+train_class <- train_class %>% 
+	select(-target_class) %>% 
+	bind_rows(test) %>% 
+		mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)) %>% 
+	mutate_if(is.character, funs(factor(.) %>% as.integer)) %>%
+	group_by(fullVisitorId, date) %>% 
+	summarise_all(fn) %>% 
+	data.table()
+```
+
+
+
+
+
+
+
+
 
 
 
