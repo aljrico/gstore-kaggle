@@ -24,6 +24,7 @@ library(tidyverse)
 library(data.table)
 library(jsonlite)
 library(lubridate)
+library(moments)
 
 library(viridis)
 library(harrypotter)
@@ -131,7 +132,6 @@ It looks quite beatiful, but please note that we are - quite fairly - assuming t
 
 ```{r}
 train[, transactionRevenue := ifelse(is.na(transactionRevenue), 0, transactionRevenue)]
-test[,  transactionRevenue := ifelse(is.na(transactionRevenue), 0, transactionRevenue)]
 ```
 
 
@@ -226,7 +226,13 @@ fn <- funs(mean, sd, min, max, sum, n_distinct, kurtosis, skewness, .args = list
 train_class <- train %>% 
 	mutate(date = ymd(date)) %>% 
 	group_by(fullVisitorId, date) %>% 
-	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1)))
+	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>% 
+	data.table()
+
+test_class <- test %>% 
+	mutate(date = ymd(date)) %>% 
+	group_by(fullVisitorId, date) %>% 
+	data.table()
 ```
 
 ## Feature Engineering
@@ -234,12 +240,16 @@ train_class <- train %>%
 Based on our EDA, we can fairly construct these features
 
 ```{r}
-train_class <- train_class %>% 
-	select(-target_class) %>% 
-	bind_rows(test) %>% 
-		mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)) %>% 
-	mutate_if(is.character, funs(factor(.) %>% as.integer)) %>%
+tr_te <- train_class %>% 
+	select(-target_class, -transactionRevenue, -campaignCode) %>% 
+	rbind(test_class) %>% head() 
+
+tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
+tr_te <- tr_te[,colSums(is.na(tr_te))<nrow(tr_te)]
+
+tr_te <- tr_te %>% 
 	group_by(fullVisitorId, date) %>% 
+	mutate_if(is.character, funs(factor(.) %>% as.integer)) %>%
 	summarise_all(fn) %>% 
 	data.table()
 ```
