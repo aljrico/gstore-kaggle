@@ -26,6 +26,9 @@ library(jsonlite)
 library(lubridate)
 library(moments)
 
+library(caret)
+library(xgboost)
+
 library(viridis)
 library(harrypotter)
 ```
@@ -64,8 +67,8 @@ flatten <- function(x){
 }
 
 
-train <- read_csv("data/train.csv") %>% flatten() %>% data.table()
-test  <- read_csv("data/test.csv")  %>% flatten() %>% data.table()
+train <- read_csv("data/train.csv") %>% sample_n(1e3) %>%  flatten() %>% data.table()
+test  <- read_csv("data/test.csv") %>% sample_n(1e3) %>%  flatten() %>% data.table()
 ```
 
 
@@ -79,8 +82,13 @@ glimpse(test)
 After flattening the columns, we can spot _a lot_ of hidden missing values. And I mean missing by those `not available in demo dataset` and similars. Make no mistake, those are missing values also and should be treated as that.
 
 ```{r}
-hidden_na <- function(x) x %in% c("not available in demo dataset", "(not provided)",
-                                  "(not set)", "<NA>", "unknown.unknown",  "(none)")
+hidden_na <- function(x) x %in% c("not available in demo dataset", 
+																	"(not provided)",
+                                  "(not set)", 
+																	"<NA>", 
+																	"unknown.unknown",  
+																	"(none)",
+																	"Not Socially Engaged")
 
 train <- train %>%  mutate_all(funs(ifelse(hidden_na(.), NA, .))) %>% data.table()
 test  <- test  %>%  mutate_all(funs(ifelse(hidden_na(.), NA, .))) %>% data.table()
@@ -217,7 +225,15 @@ train_class <- train %>%
 # Classification Model
 
 ```{r}
-fn <- funs(mean, sd, min, max, sum, n_distinct, kurtosis, skewness, .args = list(na.rm = TRUE))
+fn <- funs(mean, 
+					 # sd, 
+					 # min, 
+					 # max, 
+					 # sum, 
+					 # n_distinct, 
+					 # kurtosis, 
+					 # skewness, 
+					 .args = list(na.rm = TRUE))
 
 ```
 
@@ -227,12 +243,12 @@ train_class <- train %>%
 	mutate(date = ymd(date)) %>% 
 	group_by(fullVisitorId, date) %>% 
 	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>% 
-	data.table()
+	as_tibble()
 
 test_class <- test %>% 
 	mutate(date = ymd(date)) %>% 
 	group_by(fullVisitorId, date) %>% 
-	data.table()
+	as_tibble()
 ```
 
 ## Feature Engineering
@@ -240,18 +256,77 @@ test_class <- test %>%
 Based on our EDA, we can fairly construct these features
 
 ```{r}
-tr_te <- train_class %>% 
-	select(-target_class, -transactionRevenue, -campaignCode) %>% 
-	rbind(test_class) %>% head() 
+tri <- 1:nrow(train_class)
+y <- train_class$target_class
+
+outersect <- function(x, y) {
+  sort(c(setdiff(x, y),
+         setdiff(y, x)))
+}
+
+tmp <- outersect(colnames(train_class),colnames(test_class))
+
+
+tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>% 
+	rbind(test_class) %>%
+	data.table()
+
+rm(train_class, test_class)
+gc()
 
 tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
-tr_te <- tr_te[,colSums(is.na(tr_te))<nrow(tr_te)]
 
 tr_te <- tr_te %>% 
 	group_by(fullVisitorId, date) %>% 
 	mutate_if(is.character, funs(factor(.) %>% as.integer)) %>%
 	summarise_all(fn) %>% 
-	data.table()
+	as_tibble()
+```
+
+
+## XG Boost
+
+
+```{r}
+tri_val <- caret::createDataPartition(y, p = 0.9, list = F) %>% c()
+```
+
+
+Preparing Data
+```{r}
+tr_te <- tr_te %>% data.matrix()
+
+#XGB Matrices
+dtest_xgb <- xgb.DMatrix(data = tr_te[-tri, ])
+tr_te_xgb <- tr_te[tri, ]
+dtrain_xgb <- xgb.DMatrix(data = tr_te[tri, ], label = y[tri])
+dval_xgb <- xgb.DMatrix(data = tr_te_xgb[-tri_val, ], label = y[-tri_val])
+cols_xgb <- colnames(tr_te)
+
+rm(tr_te, tri, y); gc()
+```
+
+Training the actual model
+```{r}
+p <- list(objective = "binary:logistic",
+					booster = "gbtree",
+					eval_metric = "auc",
+					nthread = 4,
+					eta = 0.001,
+					max_depth = 6,
+					min_child_weight = 30,
+					gamma = 0,
+					subsample = 0.85,
+					colsample_bytree = 0.7,
+					colsample_bylevel = 0.632,
+					alpha = 0,
+					lambda = 0,
+					nrounds = 2000)
+
+m_xgb <- xgb.train(p, dtrain_xgb, p$nrounds, list(val = dval_xgb), print_every_n = 50, early_stopping_rounds = 300)
+
+xgb.importance(cols_xgb, model=m_xgb) %>%
+	xgb.plot.importance(top_n = 50)
 ```
 
 
