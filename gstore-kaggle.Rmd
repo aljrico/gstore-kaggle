@@ -31,6 +31,8 @@ library(xgboost)
 
 library(viridis)
 library(harrypotter)
+
+library(lime)
 ```
 
 
@@ -67,8 +69,8 @@ flatten <- function(x){
 }
 
 
-train <- read_csv("data/train.csv") %>% sample_n(1e3) %>%  flatten() %>% data.table()
-test  <- read_csv("data/test.csv") %>% sample_n(1e3) %>%  flatten() %>% data.table()
+train <- read_csv("data/train.csv") %>% sample_n(9e4) %>% flatten() %>% data.table()
+test  <- read_csv("data/test.csv")  %>% sample_n(9e4) %>%  flatten() %>% data.table()
 ```
 
 
@@ -108,11 +110,18 @@ train %>%
   				 fill = viridis(3)[[2]]) +
 		geom_text(aes(label = paste0(round(missing_pct,1), " (%)"),
 								y= missing_pct),
-						vjust = +1.5) +
+						hjust = -1) +
   labs(y = "Missing Values (%)", x = "Features") +
   coord_flip() +
   theme_minimal()
 ```
+
+
+```{r}
+train[,which(unlist(lapply(train, function(x)!all(is.na(x))))),with=F]
+test[,which(unlist(lapply(test, function(x)!all(is.na(x))))),with=F]
+```
+
 
 
 # Defining the Target
@@ -243,6 +252,7 @@ train_class <- train %>%
 	mutate(date = ymd(date)) %>% 
 	group_by(fullVisitorId, date) %>% 
 	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>% 
+	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>% 
 	as_tibble()
 
 test_class <- test %>% 
@@ -251,13 +261,128 @@ test_class <- test %>%
 	as_tibble()
 ```
 
+Resampling in order to balance data
+```{r}
+n_pos <- sum(train_class$target_class==1)
+n_tot <- nrow(train_class)
+train_positive <- train_class %>% 
+	filter(target_class == 1) %>% 
+	sample_n(size = floor((n_tot - n_pos)/(n_pos)), replace = TRUE)
+
+train_class <- rbind(train_positive, train_class) %>% as_tibble()
+```
+
+
+## EDA
+
+
+Note that these EDA is going to be made after resampling the data. That could seem utterly biased, and it is. The point is that, as long as we are aware of that, we'll be ok. The purpose of this EDA is not simply to explore the data as it is, but to extract relevant features. Resampling the data lets us put the features in perspective. As we will see followingly, features evenly distributed (50-50) amongs those who paid something and those who didn't, is telling us basically nothing that could help us predict the target.
+
+### Weekends
+
+The first variable that I'd like to explore is that one already spotted in the time dependence study of our data. A variable that tells us whether the customer came to the store during a weekend.
+
+```{r}
+train_class %>% 
+			mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),TRUE,FALSE)) %>% 
+	ggplot(aes(x = as.factor(weekend), fill = target_class == 1)) +
+	geom_bar(position = "fill", colour = "black") +
+	scale_fill_viridis(discrete = TRUE, name = "Payed?") +
+	xlab("Weekend?") +
+	# scale_x_discrete(limits = c("FALSE", "TRUE")) +
+	ylab("") 
+
+```
+
+We can see that our common sense was somehow right, and the proportion of people that _didn't_ spend any money increases during the weekends.
+
+
+### channelGrouping
+```{r}
+train_class %>% 
+	group_by(channelGrouping, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(channelGrouping, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Channel Grouping") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = channelGrouping, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Channel Grouping") +
+	ylab("")
+```
+
+The results are quite informative, don't you think? It seems clear that people comming from `Referral` have a greater tendency to end up paying something than the average guy. We could say exactly the opposite for `Social`, since their results are plainly aweful.
+
+The rest are confusing or non-informative. Either by a lack of data or because the distribution is evenly splitted.
+
+### Browser
+
+```{r}
+train_class %>% 
+	group_by(browser, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(browser, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Browser") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = browser, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Browser") +
+	ylab("")
+```
+If I have to be honest, I'd rather drop this feature. Almost everyone is using `Chrome`, which is splitted in the middle and tells us nothing. And the rest are so rare that any meaningful difference could be labeled as an outlier.
+
+If we want to get a bit creative, we could think os simplifying this feature. We could say that from all these browsers we can distinguish `Chrome`, `No-Chrome-but-still-mainstream` and the rest. Let's plot that and see if we can spot something useful.
+
+```{r}
+train_class %>% 
+	mutate(browser = ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))) %>% 
+	group_by(browser, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(browser, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Browser") +
+	ylab("")
+
+train_class %>% 
+	mutate(browser = ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))) %>% 
+	group_by(browser, target_class) %>% 
+	ggplot(aes(x = browser, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Browser") +
+	ylab("")
+```
+
+We should remember that _Chrome_ is - hands down - the most used browser both in pc and smartphones. And that after all, we are talking about a Merchandising Google Store. Chances are, that if our customer is not using _Chrome_, she might be not a big fan of Google.
+
+At this point I would just build a feature of type boolean that tracks whether the customer is using `Chrome` or not. And leave it there.
+
+
+
 ## Feature Engineering
 
 Based on our EDA, we can fairly construct these features
 
 ```{r}
 tri <- 1:nrow(train_class)
-y <- train_class$target_class
+y <- train_class$target_class %>% as.numeric()
 
 outersect <- function(x, y) {
   sort(c(setdiff(x, y),
@@ -269,6 +394,7 @@ tmp <- outersect(colnames(train_class),colnames(test_class))
 
 tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>% 
 	rbind(test_class) %>%
+		mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)) %>% 
 	data.table()
 
 rm(train_class, test_class)
@@ -294,23 +420,26 @@ tri_val <- caret::createDataPartition(y, p = 0.9, list = F) %>% c()
 
 Preparing Data
 ```{r}
-tr_te <- tr_te %>% data.matrix()
+trte_xgb <- tr_te %>% 
+	ungroup() %>% 
+	dplyr::select(-fullVisitorId,-date,-visitId) %>% 
+	data.matrix()
 
 #XGB Matrices
-dtest_xgb <- xgb.DMatrix(data = tr_te[-tri, ])
-tr_te_xgb <- tr_te[tri, ]
-dtrain_xgb <- xgb.DMatrix(data = tr_te[tri, ], label = y[tri])
-dval_xgb <- xgb.DMatrix(data = tr_te_xgb[-tri_val, ], label = y[-tri_val])
-cols_xgb <- colnames(tr_te)
+dtest_xgb <- xgb.DMatrix(data = trte_xgb[-tri, ])
+trte_xgb_xgb <- trte_xgb[tri, ]
+dtrain_xgb <- xgb.DMatrix(data = trte_xgb[tri, ], label = y[tri])
+dval_xgb <- xgb.DMatrix(data = trte_xgb_xgb[-tri_val, ], label = y[-tri_val])
+cols_xgb <- colnames(trte_xgb)
 
-rm(tr_te, tri, y); gc()
+rm(trte_xgb, tri); gc()
 ```
 
 Training the actual model
 ```{r}
 p <- list(objective = "binary:logistic",
 					booster = "gbtree",
-					eval_metric = "auc",
+					eval_metric = "ndcg",
 					nthread = 4,
 					eta = 0.001,
 					max_depth = 6,
@@ -323,10 +452,29 @@ p <- list(objective = "binary:logistic",
 					lambda = 0,
 					nrounds = 2000)
 
-m_xgb <- xgb.train(p, dtrain_xgb, p$nrounds, list(val = dval_xgb), print_every_n = 50, early_stopping_rounds = 300)
+m_xgb <- xgb.train(p, dtrain_xgb, p$nrounds, list(val = dval_xgb), print_every_n = 50, early_stopping_rounds = 500)
 
 xgb.importance(cols_xgb, model=m_xgb) %>%
 	xgb.plot.importance(top_n = 50)
+```
+
+
+```{r}
+probs <- predict(m_xgb, dtest_xgb)
+predictions <- (probs > 0.5) %>% as.numeric()
+
+predictions <- predictions %>% 
+	as_tibble() %>% 
+	rename_(predict_label = names(.)[1]) %>% 
+	tibble::rownames_to_column()
+
+correct_pred <- train_class %>% 
+	tibble::rownames_to_column() %>% 
+	left_join(predictions) %>% 
+	filter(predict_label == target_class) 
+
+explainer <- lime(correct_pred, model = m_xgb, 
+                  preprocess = as.numeric)
 ```
 
 
