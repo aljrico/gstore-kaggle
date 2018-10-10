@@ -487,6 +487,30 @@ However, the results are not much different that those that could be extracted f
 
 So I would rather not adding this new feature yet.
 
+### Device
+
+```{r}
+train_class %>% 
+	group_by(deviceCategory, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(deviceCategory, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Device") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = deviceCategory, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Device") +
+	ylab("")
+```
+
+As you might have noted by now, I like to simplify. In this feature I see a main driver: Whether a user is using the desktop or not. Mobile and Tablt interactions seem a bit more casual, less oriented to end up buying something. So I would suggest to build another boolean feature that jusks asks whether a user is in their desktop or not. 
+
 
 
 
@@ -522,6 +546,8 @@ tr_te[, source_from_youtube := ifelse(source == 'youtube.com', 1, 0) %>% as.nume
 tr_te[, source := NULL]
 tr_te[, is_mediu_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
 tr_te[, medium := NULL]
+tr_te[, is_device_desktop := ifelse(deviceCategory == 'desktop', 1, 0) %>% as.numeric]
+tr_te[, deviceCategory := NULL]
 
 tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
 
