@@ -261,7 +261,15 @@ test_class <- test %>%
 	as_tibble()
 ```
 
-Resampling in order to balance data
+By now, we should have noticed a big problem that we are facing here. Note that we have far more instances for `target_class == 0` than for `target_class == 1`. This is what we call *unbalanced data*. This is a problem, because any model that we might build will tend to label every output as `0`, in order to increase their accuracy. And that is going to get the model more accuracte, indeed; but is not going to be useful for us.
+
+Imagine that you are building an AI model in order to spot and diagnose illnesses in people. An extremely accurate model would be one that _always_ diagnoses no illness; a model that just claims that every person is healthy. That would be extremely accurate, wouldn't it? After all, most people are healthy the vast majority of the time. Dspite being accurate, such a model turns out to be utterly useless, because is not telling you anything useful.
+
+Anagolously, our model will tend to spot every possible customer as `non-payer`. Making the model accurate, but pointless.
+
+There are a myriad of techniques in order to avoid it. For simplicity's sake, we are going to use _oversampling_. This is a kind of [bootstrapping](https://en.wikipedia.org/wiki/Bootstrapping) technique, because we simply duplicate some of our instances, in order to balance the data a little bit.
+
+
 ```{r}
 n_pos <- sum(train_class$target_class==1)
 n_tot <- nrow(train_class)
@@ -272,9 +280,10 @@ train_positive <- train_class %>%
 train_class <- rbind(train_positive, train_class) %>% as_tibble()
 ```
 
+Now, we have our data splitted evenly. $50\%$ of our instances show `target_class == 0` and $50\%$ are `target_class == 1`.
+
 
 ## EDA
-
 
 Note that these EDA is going to be made after resampling the data. That could seem utterly biased, and it is. The point is that, as long as we are aware of that, we'll be ok. The purpose of this EDA is not simply to explore the data as it is, but to extract relevant features. Resampling the data lets us put the features in perspective. As we will see followingly, features evenly distributed (50-50) amongs those who paid something and those who didn't, is telling us basically nothing that could help us predict the target.
 
@@ -374,6 +383,107 @@ We should remember that _Chrome_ is - hands down - the most used browser both in
 
 At this point I would just build a feature of type boolean that tracks whether the customer is using `Chrome` or not. And leave it there.
 
+### Source/Medium variable
+
+
+#### Medium
+
+```{r}
+train_class %>% 
+	group_by(medium, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(medium, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Medium") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = medium, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Medium") +
+	ylab("")
+```
+We could appreciate some slight diffferents based on the medium through which the custimers arrived to the store, and we can see that there are some mediums more effective than others. If I was working in the _Analytics_ team of the GStore, I would recommend them to keep the `referral` system. It leads a lot of traffic, and impressively effective, compared to organic or the others.
+
+#### Source
+
+```{r}
+train_class %>% 
+	group_by(source, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	ggplot(aes(y = value, x = reorder(source, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Source") +
+	ylab("")
+
+top_sources <- train_class %>% 
+	group_by(source, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	.$source
+
+train_class %>% 
+	filter(source %in% top_sources) %>% 
+	ggplot(aes(x = source, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Source") +
+	ylab("")
+```
+
+
+On the other hand, we have the _Source_. Which tells from which place the traffic came from. Note that I limited the plot to the top 10 with more customers, because the list of sources is humongous; and most of them have so small numbers that we couldn't say anything useful from it.
+
+See that the source `mail.googleplex.com` is incredibly efficient. It streams a lot of traffic and almost everyone is paying something. Even though we have the data rebalanced, that is impressive. On the contrary, `youtubecom` seems like a poor source to drag customers from.
+
+#### Source/Medium Variable
+
+In [this](https://www.kaggle.com/erikbruin/google-analytics-eda-lightgbm-screenshots) fantastic Kernel, I saw that the author created a new variable combining both the `Source` and the `Medium`, which could be a significant feature for a model.
+
+```{r}
+train_class %>% 
+	mutate(source_medium = paste(source, medium, sep="/")) %>% 
+	group_by(source_medium, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	ggplot(aes(y = value, x = reorder(source_medium, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Source/Medium") +
+	ylab("")
+
+top_sourcemediums <- train_class %>% 
+	mutate(source_medium = paste(source, medium, sep="/")) %>% 
+	group_by(source_medium, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	.$source_medium
+
+train_class %>% 
+	mutate(source_medium = paste(source, medium, sep="/")) %>% 
+	filter(source_medium %in% top_sourcemediums) %>% 
+	ggplot(aes(x = source_medium, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Source/Medium") +
+	ylab("")
+```
+
+However, the results are not much different that those that could be extracted from just the `Source`. Actually, the main important factors that I see here are whether the customer has come from the googleplex mail service, or whether the customer has come from youtube. One is positive and the other is negative, and that is all - the rest might be just for overfitting.
 
 
 ## Feature Engineering
@@ -394,11 +504,20 @@ tmp <- outersect(colnames(train_class),colnames(test_class))
 
 tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>% 
 	rbind(test_class) %>%
-		mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)) %>% 
 	data.table()
 
-rm(train_class, test_class)
+rm(train_class, test_class, tmp)
 gc()
+
+tr_te[, weekend := ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)]
+tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
+tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
+tr_te[, browser := NULL]
+tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
+tr_te[, source_from_youtube := ifelse(source == 'youtube.com', 1, 0) %>% as.numeric()]
+tr_te[, source := NULL]
+tr_te[, is_mediu_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
+tr_te[, medium := NULL]
 
 tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
 
