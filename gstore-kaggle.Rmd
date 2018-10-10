@@ -485,6 +485,10 @@ train_class %>%
 
 However, the results are not much different that those that could be extracted from just the `Source`. Actually, the main important factors that I see here are whether the customer has come from the googleplex mail service, or whether the customer has come from youtube. One is positive and the other is negative, and that is all - the rest might be just for overfitting.
 
+So I would rather not adding this new feature yet.
+
+
+
 
 ## Feature Engineering
 
