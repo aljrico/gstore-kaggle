@@ -26,6 +26,8 @@ library(jsonlite)
 library(lubridate)
 library(moments)
 
+library(tictoc)
+
 library(caret)
 library(xgboost)
 
@@ -69,8 +71,8 @@ flatten <- function(x){
 }
 
 
-train <- read_csv("data/train.csv") %>% sample_n(9e4) %>% flatten() %>% data.table()
-test  <- read_csv("data/test.csv")  %>% sample_n(9e4) %>%  flatten() %>% data.table()
+train <- read_csv("data/train.csv") %>% sample_n(1e3)  %>% flatten() %>% data.table()
+test  <- read_csv("data/test.csv")  %>%  flatten() %>% data.table()
 ```
 
 
@@ -235,13 +237,13 @@ train_class <- train %>%
 
 ```{r}
 fn <- funs(mean, 
-					 # sd, 
-					 # min, 
-					 # max, 
-					 # sum, 
-					 # n_distinct, 
-					 # kurtosis, 
-					 # skewness, 
+					 # sd,
+					 # min,
+					 # max,
+					 # sum,
+					 # n_distinct,
+					 # kurtosis,
+					 # skewness,
 					 .args = list(na.rm = TRUE))
 
 ```
@@ -271,13 +273,13 @@ There are a myriad of techniques in order to avoid it. For simplicity's sake, we
 
 
 ```{r}
-n_pos <- sum(train_class$target_class==1)
-n_tot <- nrow(train_class)
-train_positive <- train_class %>% 
-	filter(target_class == 1) %>% 
-	sample_n(size = floor((n_tot - n_pos)/(n_pos)), replace = TRUE)
-
-train_class <- rbind(train_positive, train_class) %>% as_tibble()
+# n_pos <- sum(train_class$target_class==1)
+# n_tot <- nrow(train_class)
+# train_positive <- train_class %>% 
+# 	filter(target_class == 1) %>% 
+# 	sample_n(size = floor((n_tot - n_pos)/(n_pos)), replace = TRUE)
+# 
+# train_class <- rbind(train_positive, train_class) %>% as_tibble()
 ```
 
 Now, we have our data splitted evenly. $50\%$ of our instances show `target_class == 0` and $50\%$ are `target_class == 1`.
@@ -511,6 +513,125 @@ train_class %>%
 
 As you might have noted by now, I like to simplify. In this feature I see a main driver: Whether a user is using the desktop or not. Mobile and Tablt interactions seem a bit more casual, less oriented to end up buying something. So I would suggest to build another boolean feature that jusks asks whether a user is in their desktop or not. 
 
+### Operating System
+
+As it has happened before, we have too many options, and most of them have simply not enough instances. So we are going to filter the top most important ones.
+
+```{r}
+train_class %>% 
+	group_by(operatingSystem, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	ggplot(aes(y = value, x = reorder(operatingSystem, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Operating System") +
+	ylab("")
+
+top_os <- train_class %>% 
+	group_by(operatingSystem, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	.$operatingSystem
+
+train_class %>% 
+	filter(operatingSystem %in% top_os) %>% 
+	ggplot(aes(x = operatingSystem, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Operating System") +
+	ylab("")
+```
+
+Now be careful because it seems easier than it is. Note that before this, we have stated that desktop users have more odds to end up buying something. And now we can see that users from `Chrome OS`, `Linux` and `Macintosh` also have higher chances. See the pattern? We are just seeing the same as before. If we decided to say that this is another useful variable, we would be fooling ourselves. This is just redundant information.
+
+But we can do a bit of magic, and filter in/out the desktop users and see how this changes.
+
+```{r}
+train_class %>% 
+	group_by(operatingSystem, target_class, deviceCategory) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	ggplot(aes(y = value, x = reorder(operatingSystem, -value))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Operating System") +
+	ylab("") +
+	facet_grid(ifelse(deviceCategory == 'desktop', "Desktop", "Non-Desktop") ~.)
+
+top_os <- train_class %>% 
+	# filter(deviceCategory == "desktop") %>% 
+	group_by(operatingSystem, target_class) %>% 
+	summarise(value = n()) %>% 
+	ungroup() %>% 
+	top_n(10, value) %>% 
+	.$operatingSystem
+
+train_class %>% 
+	filter(operatingSystem %in% top_os) %>% 
+	ggplot(aes(x = operatingSystem, fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Operating System") +
+	ylab("") +
+	facet_grid(ifelse(deviceCategory == 'desktop', "Desktop", "Non-Desktop") ~.)
+```
+
+There are some interesting insights that we can extract from here. Windows Phone users seem to have outsanding chances of buying something in the store. But don't be fooled by small numbers. They are simply not enough people to make that plot significative enough.
+
+People that is interested in actually buying goodies in the GStore aren't casual users, are mostly geeks. We can see that in the astonishing proportion appearing in `Chrome OS` and `Linux`, and quite impressive numbers in the `Macintosh`. The more _casual_ the operating system is - and less developer preferred -, the less proportion of customers end up spending money.
+
+The interactions between `Operating System` and whether the device is a `Dekstop` are interesting and informative, we should use them. 
+
+### Visit Number
+
+```{r}
+train_class %>% 
+	group_by(visitNumber, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = visitNumber)) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Visit Number") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = visitNumber, colour = as.factor(target_class))) +
+	geom_density(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Visit Number") +
+	ylab("")
+
+train_class %>% 
+	mutate(single_visit = ifelse(visitNumber == 1,1,0)) %>% 
+	group_by(single_visit, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.factor(single_visit))) +
+	geom_col(aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Single Visit?") +
+	ylab("")
+
+train_class %>% 
+	mutate(single_visit = ifelse(visitNumber == 1,1,0)) %>% 
+	ggplot(aes(x = as.factor(single_visit), fill = as.factor(target_class))) +
+	geom_bar(position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_viridis(name = "Payed?", discrete = TRUE) +
+	xlab("Single Visit?") +
+	ylab("")
+```
+
 
 
 
@@ -534,29 +655,59 @@ tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>%
 	rbind(test_class) %>%
 	data.table()
 
-rm(train_class, test_class, tmp)
+# rm(train_class, test_class, tmp)
 gc()
 
 tr_te[, weekend := ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)]
+tr_te[, date := NULL]
 tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
 tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
 tr_te[, browser := NULL]
 tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
 tr_te[, source_from_youtube := ifelse(source == 'youtube.com', 1, 0) %>% as.numeric()]
 tr_te[, source := NULL]
-tr_te[, is_mediu_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
+tr_te[, is_medium_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
 tr_te[, medium := NULL]
-tr_te[, is_device_desktop := ifelse(deviceCategory == 'desktop', 1, 0) %>% as.numeric]
+tr_te[, is_device_desktop := ifelse(deviceCategory == 'desktop', 1, 0) %>% as.numeric()]
+tr_te[, is_device_macbook := is_device_desktop*ifelse(operatingSystem == "Macintosh", 1, 0)]
+tr_te[, windows_desktop := is_device_desktop*ifelse(operatingSystem == 'Windows', 1, 0)]
+tr_te[, is_device_chromebook := ifelse(operatingSystem == "Chrome OS", 1, 0)]
+tr_te[, is_device_linux := ifelse(operatingSystem == "Linux", 1, 0)]
+tr_te[, is_phone_ios := ifelse(operatingSystem == "iOS", 1, 0)]
+tr_te[, is_phone_android := ifelse(operatingSystem == "Android", 1, 0)]
+tr_te[, operatingSystem := NULL]
 tr_te[, deviceCategory := NULL]
+tr_te[, single_visit := ifelse(visitNumber == 1,1,0) ]
 
 tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
 
 tr_te <- tr_te %>% 
-	group_by(fullVisitorId, date) %>% 
+	dplyr::select(-visitId,-visitStartTime, -sessionId) %>% 
+	group_by(fullVisitorId) %>% 
 	mutate_if(is.character, funs(factor(.) %>% as.integer)) %>%
 	summarise_all(fn) %>% 
 	as_tibble()
 ```
+
+## Random Forest
+
+Preparing Data
+```{r}
+trte_rf <- tr_te %>% 
+	ungroup() %>% 
+	dplyr::select(-fullVisitorId) %>% 
+	as_tibble()
+
+train_rf <- trte_rf[tri,]
+test_rf <-  trte_rf[-tri,]
+```
+
+Training Model
+```{r}
+
+```
+
+
 
 
 ## XG Boost
@@ -571,7 +722,7 @@ Preparing Data
 ```{r}
 trte_xgb <- tr_te %>% 
 	ungroup() %>% 
-	dplyr::select(-fullVisitorId,-date,-visitId) %>% 
+	dplyr::select(-fullVisitorId) %>% 
 	data.matrix()
 
 #XGB Matrices
@@ -588,7 +739,7 @@ Training the actual model
 ```{r}
 p <- list(objective = "binary:logistic",
 					booster = "gbtree",
-					eval_metric = "ndcg",
+					eval_metric = "auc",
 					nthread = 4,
 					eta = 0.001,
 					max_depth = 6,
@@ -607,23 +758,104 @@ xgb.importance(cols_xgb, model=m_xgb) %>%
 	xgb.plot.importance(top_n = 50)
 ```
 
+```{r}
+# Hyperparameter Tuning XGB---------------------------------------------------
+#---------------------------
+
+
+parameterList <- expand.grid(subsample = seq(from = 0.5, to = 1, by = 0.25),
+														 colsample_bytree = seq(from = 0.4, to = 1, by = 0.2),
+														 lr = seq(from = 2, to = 10, by = 1),
+														 mtd = seq(from = 4, to = 10, by = 2))
+ntrees <- 100
+
+scores <- c()
+
+rmseErrorsHyperparameters <- for(i in 1:nrow(parameterList)){
+
+	#Extract Parameters to test
+	currentSubsampleRate <- parameterList[["subsample"]][[i]]
+	currentColsampleRate <- parameterList[["colsample_bytree"]][[i]]
+	lr <- parameterList[["lr"]][[i]]
+	mtd <- parameterList[["mtd"]][[i]]
+
+	p <- list(objective = "binary:logistic",
+						booster = "gbtree",
+						eval_metric = "auc",
+						nthread = 4,
+						eta = lr/ntrees,
+						max_depth = mtd,
+						min_child_weight = 30,
+						gamma = 0,
+						subsample = currentSubsampleRate,
+						colsample_bytree = currentColsampleRate,
+						colsample_bylevel = 0.632,
+						alpha = 0,
+						lambda = 0,
+						nrounds = ntrees)
+	tic()
+	xgb_cv <- xgb.cv(p, dtrain_xgb, p$nrounds, print_every_n = 5, early_stopping_rounds = 25, nfold = 5)
+	toc()
+	cat(paste0("... ", i/nrow(parameterList)*100, " (%)  ... \n"))
+	scores[i] <- xgb_cv$evaluation_log$test_auc_mean %>% max()
+}
+
+m <- which.max(scores)
+currentSubsampleRate <- parameterList[["subsample"]][[m]]
+currentColsampleRate <- parameterList[["colsample_bytree"]][[m]]
+lr <- parameterList[["lr"]][[m]]
+mtd <- parameterList[["mtd"]][[m]]
+
+ntrees <- 2000
+p <- list(objective = "binary:logistic",
+					booster = "gbtree",
+					eval_metric = "auc",
+					nthread = 4,
+					eta = lr/ntrees,
+					max_depth = mtd,
+					min_child_weight = 30,
+					gamma = 0,
+					subsample = currentSubsampleRate,
+					colsample_bytree = currentColsampleRate,
+					colsample_bylevel = 0.632,
+					alpha = 0,
+					lambda = 0,
+					nrounds = ntrees)
+
+m_xgb <- xgb.train(p, dtrain_xgb, p$nrounds, list(val = dval_xgb), print_every_n = 50, early_stopping_rounds = 500)
+xgb.importance(cols_xgb, model=m_xgb) %>%
+	xgb.plot.importance(top_n = 50)
+
+```
 
 ```{r}
-probs <- predict(m_xgb, dtest_xgb)
-predictions <- (probs > 0.5) %>% as.numeric()
+read_csv("data/sample_submission.csv") %>%
+	mutate(fullVisitorId = as.integer(unique(fullVisitorId))) %>%
+	mutate(y = predict(m_xgb, dtest_xgb)) %>% 
+  mutate(y = ifelse(y > 0.5, 1, 0)) %>% 
+  mutate(y = ifelse(y == 1, 4e6,0)) %>% 
+	write_csv(paste0("submit/tuned_xgb_", round(m_xgb$best_score, 5), ".csv"))
+```
 
-predictions <- predictions %>% 
-	as_tibble() %>% 
-	rename_(predict_label = names(.)[1]) %>% 
-	tibble::rownames_to_column()
 
-correct_pred <- train_class %>% 
-	tibble::rownames_to_column() %>% 
-	left_join(predictions) %>% 
-	filter(predict_label == target_class) 
 
-explainer <- lime(correct_pred, model = m_xgb, 
-                  preprocess = as.numeric)
+
+```{r}
+# probs <- predict(m_xgb, dtest_xgb)
+# predictions <- (probs > 0.5) %>% as.numeric()
+# 
+# predictions <- predictions %>% 
+# 	as_tibble() %>% 
+# 	rename_(predict_label = names(.)[1]) %>% 
+# 	tibble::rownames_to_column()
+# 
+# correct_pred <- train_class %>% 
+# 	tibble::rownames_to_column() %>% 
+# 	left_join(predictions) %>% 
+# 	filter(predict_label == target_class) 
+# 
+# explainer <- lime(correct_pred, model = m_xgb, 
+#                   preprocess = as.numeric)
 ```
 
 
@@ -636,26 +868,26 @@ explainer <- lime(correct_pred, model = m_xgb,
 
 
 
-```{r}
-df <- train %>% 
-	group_by(fullVisitorId) %>% 
-	summarise(Revenue = (sum(as.numeric(transactionRevenue)))) %>% 
-	arrange(desc(Revenue)) %>% 
-	mutate(cs_Revenue = cumsum(Revenue)) %>% 
-	mutate(ind = row_number()) %>%
-	select(ind, cs_Revenue)
+<!-- ```{r} -->
+<!-- df <- train %>%  -->
+<!-- 	group_by(fullVisitorId) %>%  -->
+<!-- 	summarise(Revenue = (sum(as.numeric(transactionRevenue)))) %>%  -->
+<!-- 	arrange(desc(Revenue)) %>%  -->
+<!-- 	mutate(cs_Revenue = cumsum(Revenue)) %>%  -->
+<!-- 	mutate(ind = row_number()) %>% -->
+<!-- 	select(ind, cs_Revenue) -->
 
-df %>% 
-	na.omit() %>% 
-	ggplot(aes(x = (ind), y = (cs_Revenue))) +
-	geom_line(colour = "black", size = 1.2) +
-	geom_area(fill = viridis(10)[[5]]) +
-	# scale_x_log10() +
-	scale_x_continuous(limits = c(0, 3500)) +
-	ylab("Accumulated Revenue") +
-	xlab("Index of top payers ") +
-	theme_minimal()
-	
-```
+<!-- df %>%  -->
+<!-- 	na.omit() %>%  -->
+<!-- 	ggplot(aes(x = (ind), y = (cs_Revenue))) + -->
+<!-- 	geom_line(colour = "black", size = 1.2) + -->
+<!-- 	geom_area(fill = viridis(10)[[5]]) + -->
+<!-- 	# scale_x_log10() + -->
+<!-- 	scale_x_continuous(limits = c(0, 3500)) + -->
+<!-- 	ylab("Accumulated Revenue") + -->
+<!-- 	xlab("Index of top payers ") + -->
+<!-- 	theme_minimal() -->
+
+<!-- ``` -->
 
 
