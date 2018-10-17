@@ -1,4 +1,3 @@
-
 # Libraries & Functions ---------------------------------------------------
 
 
@@ -58,7 +57,7 @@ numerise_data <- function(data, numeric_columns){
 
 # Retrieve Data -----------------------------------------------------------
 
-train <- read_csv("data/train.csv") %>% sample_n(1e3)  %>% flatten() %>% data.table()
+train <- read_csv("data/train.csv") %>% sample_n(1e4)  %>% flatten() %>% data.table()
 test  <- read_csv("data/test.csv")  %>%  flatten() %>% data.table()
 
 
@@ -108,21 +107,34 @@ test_class <- test %>%
 	as_tibble()
 
 # Resampling --------------------------------------------------------------
+
 y <- train_class[["target_class"]]
 y[is.na(y)] <- 0
 train_class[["target_class"]] <- y
+n <- nrow(train_class)
+
 n_pos <- sum(train_class$target_class==1)
 n_tot <- nrow(train_class)
 train_positive <- train_class %>%
 	filter(target_class == 1) %>%
-	sample_n(size = floor((n_tot - n_pos)/(10*n_pos)), replace = TRUE)
+	sample_n(size = floor((n_tot - n_pos)/(2*n_pos)), replace = TRUE)
 
-train_class <- rbind(train_positive, train_class) %>% as_tibble()
-rm(y, n_pos,n_tot,train_positive); gc()
+train_class <- rbind(train_positive, train_class) %>%
+	data.table()
+
+train_class <- train_class[, .SD[sample(.N, n)]] %>% as_tibble()
+
+rm(y,n, n_pos,n_tot,train_positive); gc()
 # Feature Engineering -----------------------------------------------------
 
 tri <- 1:nrow(train_class)
-y <- train_class$target_class %>% as.numeric()
+y <- train_class %>%
+	group_by(fullVisitorId) %>%
+	summarise(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>%
+	.$target_class
+
+
 
 train_ids <- train_class$fullVisitorId %>% unique()
 test_ids <-  test_class$fullVisitorId %>% unique()
@@ -136,7 +148,7 @@ tmp <- outersect(colnames(train_class),colnames(test_class))
 
 
 tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>%
-	rbind(test_class) %>%
+	rbind(test_class %>% ungroup()) %>%
 	data.table()
 
 rm(train_class, test_class, tmp)
@@ -166,22 +178,29 @@ tr_te[, single_visit := ifelse(visitNumber == 1,1,0) ]
 tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
 
 fn <- funs(mean,
-					 # sd,
+					 sd,
 					 # min,
 					 # max,
 					 # sum,
-					 # n_distinct,
+					 n_distinct,
 					 # kurtosis,
 					 # skewness,
 					 .args = list(na.rm = TRUE))
 
+all_ids <- tr_te$fullVisitorId
 tr_te <- tr_te %>%
-	select(-visitId,-visitStartTime, -sessionId) %>%
+	select(-visitId,-visitStartTime, -sessionId, -fullVisitorId) %>%
 	numerise_data() %>%
-	mutate(fullVisitorId = as.factor(fullVisitorId)) %>%
 	data.table()
+tr_te$fullVisitorId <- all_ids %>% as.character()
 
-tr_te[, lapply(.SD, mean, na.rm=TRUE), by=fullVisitorId ]
+# tr_te[, lapply(.SD, mean, na.rm=TRUE), by=fullVisitorId ]
+
+tr_te <- tr_te %>%
+	group_by(fullVisitorId) %>%
+	summarise_all(fn)
+
+tr_te[is.na(tr_te)] <- 0
 
 
 # Random Forest -----------------------------------------------------------
@@ -195,15 +214,17 @@ trte_rf <- tr_te %>%
 train_rf <- tr_te %>%
 	ungroup() %>%
 	filter(fullVisitorId %in% train_ids) %>%
+	dplyr::select(-fullVisitorId) %>%
 	as_tibble()
 
 test_rf <- tr_te %>%
 	ungroup() %>%
 	filter(fullVisitorId %in% test_ids) %>%
+	dplyr::select(-fullVisitorId) %>%
 	as_tibble()
 
-train_rf <- trte_rf[tri,]
-test_rf <-  trte_rf[-tri,]
+# train_rf <- trte_rf[tri,]
+# test_rf <-  trte_rf[-tri,]
 
 y[is.na(y)] <- 0
 train_rf$target <- y
@@ -237,3 +258,5 @@ prediction <- predict(rf_model, test_rf) %>% c()
 sub <- read_csv("data/sample_submission.csv")
 
 sub$PredictedLogRevenue <- (prediction-1)*median_revenue %>% c()
+
+rf_model
