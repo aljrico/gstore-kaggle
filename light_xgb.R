@@ -12,11 +12,6 @@ library(tictoc)
 tic()
 library(caret)
 library(xgboost)
-library(h2o)
-
-
-
-
 
 flatten <- function(x){
 
@@ -57,13 +52,13 @@ numerise_data <- function(data, numeric_columns){
 }
 
 fn <- funs(mean,
-					 # sd,
-					 # # min,
-					 # # max,
-					 # # sum,
+					 sd,
+					 min,
+					 max,
+					 sum,
 					 n_distinct,
-					 # kurtosis,
-					 # skewness,
+					 kurtosis,
+					 skewness,
 					 .args = list(na.rm = TRUE))
 
 
@@ -216,38 +211,6 @@ train_rf_bal <- train_rf %>%
 	ungroup()
 
 
-# Classification H2O ------------------------------------------------------
-h2o.init()
-train_h2o <- as.h2o(train_rf %>% mutate(target = as.factor(target)))
-train_h2o_bal <- as.h2o(train_rf_bal %>% ungroup() %>%  mutate(target = as.factor(target)))
-test_h2o <- as.h2o(test_rf )
-validation_set_h2o <- as.h2o(validation_set %>% mutate(target = as.factor(target)))
-
-ns <- nrow(train_rf)
-nv <- ncol(train_rf)
-alpha <- 1
-n_hidden <- (ns/(alpha*(nv + 2))) %>% ceiling()
-
-model_h2o <- h2o.deeplearning(x = setdiff(names(train_rf), c("target")),
-															y = "target",
-															training_frame = train_h2o,
-															standardize = TRUE,         # standardize data
-															hidden = c(n_hidden),       # 2 layers of 00 nodes each
-															rate = 0.001,                # learning rate
-															epochs = 1e6,                # iterations/runs over data
-															seed = 666                 # reproducability seed
-)
-
-model_h2o_bal <- h2o.deeplearning(x = setdiff(names(train_rf_bal), c("target")),
-																	y = "target",
-																	training_frame = train_h2o,
-																	standardize = TRUE,         # standardize data
-																	hidden = c(n_hidden),       # 2 layers of 00 nodes each
-																	rate = 0.005,                # learning rate
-																	epochs = 1e4,                # iterations/runs over data
-																	seed = 666                 # reproducability seed
-)
-
 # Classification XGB ------------------------------------------------------
 
 y <- train_rf$target
@@ -280,9 +243,7 @@ m_xgb_bal <- xgb.train(p, train_xgb_bal, p$nrounds, list(val = val_xgb), print_e
 
 
 # Classification Cross Validation --------------------------------------------------------
-# h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[3]]
-# h2o.predictions_bal <- as.data.frame(h2o.predict(model_h2o_bal, validation_set_h2o))[[3]]
-#
+
 # prediction_xgb <- predict(m_xgb,val_xgb, type = "prob")
 # prediction_xgb_bal <- predict(m_xgb_bal,val_xgb, type = "prob")
 #
@@ -291,34 +252,15 @@ m_xgb_bal <- xgb.train(p, train_xgb_bal, p$nrounds, list(val = val_xgb), print_e
 #
 # prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
 # confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
-#
-# h2o.prediction <- (h2o.predictions + h2o.predictions_bal)/2
-# h2o.prediction <- ifelse(h2o.prediction >= 0.5, 1, 0) %>% as.factor()
-#
-# confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions > 0.5, 1, 0))), as.factor(validation_set$target))
-# confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-# confusionMatrix(data = as.factor(h2o.prediction), as.factor(validation_set$target))
-#
-# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction > 0.5, 1, 0))), as.factor(validation_set$target))
-# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-# confusionMatrix(data = prediction_rf, as.factor(validation_set$target))
-#
-# prediction_final <- ifelse((h2o.predictions + prediction_xgb)/2 >= 0.5, 1, 0) %>% as.factor()
-# confusionMatrix(data = prediction_final, as.factor(validation_set$target))
 
 
 # Classification Prediction --------------------------------------------------------------
 prediction_xgb <- predict(m_xgb,test_xgb, type = "prob")
 prediction_xgb_bal <- predict(m_xgb_bal,test_xgb, type = "prob")
 
-
-h2o.predictions <- as.data.frame(h2o.predict(model_h2o, test_h2o))[[3]]
-h2o.predictions_bal <- as.data.frame(h2o.predict(model_h2o_bal, test_h2o))[[3]]
-
-prediction_h20 <- (h2o.predictions + h2o.predictions_bal)/2
 prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
 
-prediction_final <- (prediction_h20 + prediction_xgb)/2
+prediction_final <- prediction_xgb
 
 prediction_class <- ifelse(prediction_final >= 0.5, 1, 0)
 
@@ -445,28 +387,6 @@ train_rf <- train_rf %>%
 	filter(!(fullVisitorId %in% validation_ids)) %>%
 	dplyr::select(-fullVisitorId)
 
-# Regression H2O ---------------------------------------------------------
-
-train_h2o <- as.h2o(train_rf)
-test_h2o <- as.h2o(test_rf)
-validation_set_h2o <- as.h2o(validation_set)
-
-ns <- nrow(train_rf)
-nv <- ncol(train_rf)
-alpha <- 1
-n_hidden <- (ns/(alpha*(nv + 2))) %>% ceiling()
-
-model_h2o <- h2o.deeplearning(x = setdiff(names(train_rf), c("target")),
-															y = "target",
-															training_frame = train_h2o,
-															standardize = TRUE,         # standardize data
-															hidden = c(n_hidden),       # 2 layers of 00 nodes each
-															rate = 0.0005,                # learning rate
-															epochs = 1e5,                # iterations/runs over data
-															seed = 666                 # reproducability seed
-)
-
-
 # Regression XGB ----------------------------------------------------------
 
 y <- train_rf$target
@@ -496,24 +416,10 @@ prediction_xgb <- predict(m_xgb, val_xgb) %>% c()
 plot(prediction_xgb,validation_set$target)
 sum((prediction_xgb-validation_set$target)^2)
 
-
-h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[1]]
-plot(h2o.predictions,validation_set$target)
-sum((h2o.predictions-validation_set$target)^2)
-
-plot(prediction_xgb,h2o.predictions)
-
-prediction <- (prediction_xgb + h2o.predictions)/3
-plot(prediction,validation_set$target)
-sum((prediction-validation_set$target)^2)
 # Submission --------------------------------------------------------------
 
 
-prediction_reg_xgb <- predict(m_xgb, test_xgb)   %>% c()
-prediction_reg_h2o <- as.data.frame(h2o.predict(model_h2o, test_h2o))[[1]]
-
-prediction_reg <- (prediction_reg_xgb + prediction_reg_h2o)/2
-
+prediction_reg <- predict(m_xgb, test_xgb)   %>% c()
 
 
 sub <- read_csv("data/sample_submission.csv")
@@ -521,6 +427,5 @@ sub$PredictedLogRevenue <- (prediction_class)*prediction_reg %>% c()
 
 sub %>%
 	fwrite("data/submission.csv")
-
 
 toc()
