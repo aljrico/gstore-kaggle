@@ -12,11 +12,8 @@ library(tictoc)
 tic()
 library(caret)
 library(xgboost)
-library(randomForest)
 library(h2o)
 
-library(viridis)
-library(harrypotter)
 
 
 
@@ -183,9 +180,8 @@ tr_te <- tr_te %>%
 
 tr_te[is.na(tr_te)] <- 0
 
-# Classification Random Forest -----------------------------------------------------------
+# Classification Prepare Data -----------------------------------------------------------
 
-#Preparing Data
 
 validation_ids <- sample(train_ids, floor(length(train_ids)*0.1))
 
@@ -220,15 +216,6 @@ train_rf_bal <- train_rf %>%
 	ungroup()
 
 
-# Actual Training
-rf_model <- randomForest(factor(target) ~.,
-						 data = train_rf)
-
-rf_model_bal <- randomForest(factor(target) ~.,
-												 data = train_rf_bal)
-
-
-
 # Classification H2O ------------------------------------------------------
 h2o.init()
 train_h2o <- as.h2o(train_rf %>% mutate(target = as.factor(target)))
@@ -252,13 +239,13 @@ model_h2o <- h2o.deeplearning(x = setdiff(names(train_rf), c("target")),
 )
 
 model_h2o_bal <- h2o.deeplearning(x = setdiff(names(train_rf_bal), c("target")),
-															y = "target",
-															training_frame = train_h2o,
-															standardize = TRUE,         # standardize data
-															hidden = c(n_hidden),       # 2 layers of 00 nodes each
-															rate = 0.005,                # learning rate
-															epochs = 1e4,                # iterations/runs over data
-															seed = 666                 # reproducability seed
+																	y = "target",
+																	training_frame = train_h2o,
+																	standardize = TRUE,         # standardize data
+																	hidden = c(n_hidden),       # 2 layers of 00 nodes each
+																	rate = 0.005,                # learning rate
+																	epochs = 1e4,                # iterations/runs over data
+																	seed = 666                 # reproducability seed
 )
 
 # Classification XGB ------------------------------------------------------
@@ -268,7 +255,7 @@ train_xgb <- xgb.DMatrix(data = train_rf %>% select(-target) %>% as.matrix(),
 												 label = y)
 
 train_xgb_bal <- xgb.DMatrix(data = train_rf_bal %>% select(-target) %>% as.matrix(),
-												 label = train_rf_bal$target)
+														 label = train_rf_bal$target)
 val_xgb <- xgb.DMatrix(data = validation_set %>% select(-target) %>% as.matrix(),
 											 label = validation_set$target)
 test_xgb  <- xgb.DMatrix(data = test_rf %>% as.matrix())
@@ -293,46 +280,34 @@ m_xgb_bal <- xgb.train(p, train_xgb_bal, p$nrounds, list(val = val_xgb), print_e
 
 
 # Classification Cross Validation --------------------------------------------------------
-prediction <- 1 - predict(rf_model, validation_set, type="prob")[,1] %>% c()
-prediction_bal <- 1 - predict(rf_model_bal, validation_set, type="prob")[,1] %>% c()
-
-h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[3]]
-h2o.predictions_bal <- as.data.frame(h2o.predict(model_h2o_bal, validation_set_h2o))[[3]]
-
-prediction_xgb <- predict(m_xgb,val_xgb, type = "prob")
-prediction_xgb_bal <- predict(m_xgb_bal,val_xgb, type = "prob")
-
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-
-prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
-
-
-
-h2o.prediction <- (h2o.predictions + h2o.predictions_bal)/2
-h2o.prediction <- ifelse(h2o.prediction >= 0.5, 1, 0) %>% as.factor()
-
-confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = as.factor(h2o.prediction), as.factor(validation_set$target))
-
-prediction_rf_prob <- (prediction + prediction_bal)/2
-prediction_rf <- ifelse(prediction_rf_prob >= 0.5, 1, 0) %>% as.factor()
-
-
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = prediction_rf, as.factor(validation_set$target))
-
-prediction_final <- ifelse((h2o.predictions + prediction_rf_prob)/2 >= 0.5, 1, 0) %>% as.factor()
-confusionMatrix(data = prediction_final, as.factor(validation_set$target))
+# h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[3]]
+# h2o.predictions_bal <- as.data.frame(h2o.predict(model_h2o_bal, validation_set_h2o))[[3]]
+#
+# prediction_xgb <- predict(m_xgb,val_xgb, type = "prob")
+# prediction_xgb_bal <- predict(m_xgb_bal,val_xgb, type = "prob")
+#
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb_bal > 0.5, 1, 0))), as.factor(validation_set$target))
+#
+# prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
+#
+# h2o.prediction <- (h2o.predictions + h2o.predictions_bal)/2
+# h2o.prediction <- ifelse(h2o.prediction >= 0.5, 1, 0) %>% as.factor()
+#
+# confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = as.factor(as.numeric(ifelse(h2o.predictions_bal > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = as.factor(h2o.prediction), as.factor(validation_set$target))
+#
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_bal > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = prediction_rf, as.factor(validation_set$target))
+#
+# prediction_final <- ifelse((h2o.predictions + prediction_xgb)/2 >= 0.5, 1, 0) %>% as.factor()
+# confusionMatrix(data = prediction_final, as.factor(validation_set$target))
 
 
 # Classification Prediction --------------------------------------------------------------
-prediction <- 1 - predict(rf_model, test_rf, type="prob")[,1] %>% c()
-prediction_bal <- 1 - predict(rf_model_bal, test_rf, type="prob")[,1] %>% c()
-
 prediction_xgb <- predict(m_xgb,test_xgb, type = "prob")
 prediction_xgb_bal <- predict(m_xgb_bal,test_xgb, type = "prob")
 
@@ -341,17 +316,16 @@ h2o.predictions <- as.data.frame(h2o.predict(model_h2o, test_h2o))[[3]]
 h2o.predictions_bal <- as.data.frame(h2o.predict(model_h2o_bal, test_h2o))[[3]]
 
 prediction_h20 <- (h2o.predictions + h2o.predictions_bal)/2
-prediction_rf <- (prediction + prediction_bal)/2
 prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
 
-prediction_final <- (prediction_h20 + prediction_rf + prediction_xgb)/3
+prediction_final <- (prediction_h20 + prediction_xgb)/2
 
 prediction_class <- ifelse(prediction_final >= 0.5, 1, 0)
 
 
 # Regression Data Sets ----------------------------------------------------
 
-rm(m_xgb,m_xgb_bal,rf_model,rf_model_bal,sub,test_rf,train_rf,train_rf_bal,validation_set);gc()
+rm(m_xgb,m_xgb_bal,sub,test_rf,train_rf,train_rf_bal,validation_set);gc()
 
 train_reg <- train %>%
 	mutate(date = ymd(date)) %>%
@@ -439,7 +413,7 @@ tr_te[is.na(tr_te)] <- 0
 
 
 
-# Regression Training Random Forest ---------------------------------------
+# Regression Preparing Data ---------------------------------------
 
 #Preparing Data
 validation_ids <- sample(train_ids, floor(length(train_ids)*0.1))
@@ -470,28 +444,6 @@ rm(tr_te);gc()
 train_rf <- train_rf %>%
 	filter(!(fullVisitorId %in% validation_ids)) %>%
 	dplyr::select(-fullVisitorId)
-
-
-# Actual Training
-rf_model <- randomForest((target) ~.,
-												 data = train_rf)
-
-varImportance <- rf_model$importance
-
-varImportance <- data.frame(Variables = rownames(varImportance),
-														Importance = as_tibble(varImportance)$IncNodePurity)
-
-variables <- varImportance %>%
-	arrange(-Importance) %>%
-	top_n(20, Importance) %>%
-	.$Variables %>%
-	paste(collapse="+")
-
-formula <- paste("target ~ ", variables, sep = "") %>% as.formula()
-
-lm_model <- lm(formula, data = train_rf)
-
-
 
 # Regression H2O ---------------------------------------------------------
 
@@ -540,40 +492,27 @@ p <- list(objective = "reg:linear",
 m_xgb <- xgb.train(p, train_xgb, p$nrounds, list(val = val_xgb), print_every_n = 50, early_stopping_rounds = 300)
 
 # Regression Cross Validation ---------------------------------------------
-
-prediction_rf <- predict(rf_model, validation_set) %>% c()
-plot(prediction_rf,validation_set$target)
-sum((prediction_rf-validation_set$target)^2)
-
-
-prediction_lm <- predict(lm_model, validation_set) %>% c()
-plot(prediction_lm,validation_set$target)
-sum((prediction_lm-validation_set$target)^2)
-
-prediction_xgb <- predict(m_xgb, val_xgb) %>% c()
-plot(prediction_xgb,validation_set$target)
-sum((prediction_xgb-validation_set$target)^2)
-
-
-h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[1]]
-plot(h2o.predictions,validation_set$target)
-sum((h2o.predictions-validation_set$target)^2)
-
-plot(prediction_rf,prediction_lm)
-
-prediction <- (prediction_rf + prediction_lm + h2o.predictions)/3
-plot(prediction,validation_set$target)
-sum((prediction-validation_set$target)^2)
+# prediction_xgb <- predict(m_xgb, val_xgb) %>% c()
+# plot(prediction_xgb,validation_set$target)
+# sum((prediction_xgb-validation_set$target)^2)
+#
+#
+# h2o.predictions <- as.data.frame(h2o.predict(model_h2o, validation_set_h2o))[[1]]
+# plot(h2o.predictions,validation_set$target)
+# sum((h2o.predictions-validation_set$target)^2)
+#
+# plot(prediction_rf,prediction_lm)
+#
+# prediction <- (prediction_rf + prediction_lm + h2o.predictions)/3
+# plot(prediction,validation_set$target)
+# sum((prediction-validation_set$target)^2)
 # Submission --------------------------------------------------------------
 
 
-prediction_reg_rf  <- predict(rf_model, test_rf) %>% c()
-prediction_reg_lm  <- predict(lm_model, test_rf) %>% c()
 prediction_reg_xgb <- predict(m_xgb, test_xgb)   %>% c()
 prediction_reg_h2o <- as.data.frame(h2o.predict(model_h2o, test_h2o))[[1]]
 
-prediction_reg <- prediction_reg_h2o
-prediction_reg <- (prediction_reg_rf + prediction_reg_lm)/2
+prediction_reg <- (prediction_reg_xgb + prediction_reg_h2o)/2
 
 
 
