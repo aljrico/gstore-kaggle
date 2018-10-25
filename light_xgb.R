@@ -13,6 +13,8 @@ tic()
 library(caret)
 library(xgboost)
 
+source("tuning_xgb.R")
+
 flatten <- function(x){
 
 	pre_flatten <- . %>%
@@ -20,13 +22,14 @@ flatten <- function(x){
 		str_c("[", ., "]") %>%
 		fromJSON(flatten = T)
 
-	x %>%
+	output <- x %>%
 		bind_cols(pre_flatten(.$device)) %>%
 		bind_cols(pre_flatten(.$geoNetwork)) %>%
 		bind_cols(pre_flatten(.$trafficSource)) %>%
 		bind_cols(pre_flatten(.$totals)) %>%
-		select(-device, -geoNetwork, -trafficSource, -totals)	%>%
-		return()
+		select(-device, -geoNetwork, -trafficSource, -totals)
+
+	return(output)
 }
 
 outersect <- function(x, y) {
@@ -90,8 +93,8 @@ train$transactionRevenue[is.na(train$transactionRevenue)] <- 0
 
 
 # Remove 100% NA variables ------------------------------------------------
-train[,which(unlist(lapply(train, function(x)!all(is.na(x))))),with=F]
-test[,which(unlist(lapply(test, function(x)!all(is.na(x))))),with=F]
+train <- train[,which(unlist(lapply(train, function(x)!all(is.na(x))))),with=F]
+test <- test[,which(unlist(lapply(test, function(x)!all(is.na(x))))),with=F]
 
 
 
@@ -218,48 +221,80 @@ val_xgb <- xgb.DMatrix(data = validation_set %>% select(-target) %>% as.matrix()
 											 label = validation_set$target)
 test_xgb  <- xgb.DMatrix(data = test_rf %>% as.matrix())
 
+tuning_scores <- tune_xgb(train_data = train_rf,
+													target_label = "target",
+													ntrees = 100,
+													objective = "binary:logistic",
+													eval_metric = "auc")
+
+ts.plot(tuning_scores$scores)
+
+# tuning_scores %>%
+# 	melt(id.vars = "scores") %>%
+# 	ggplot(aes(y = scores, x = as.factor(value), colour = variable)) +
+# 	geom_boxplot() +
+# 	facet_grid(.~variable, scales = "free")
+#
+# tuning_scores %>%
+# 	melt(id.vars = "scores") %>%
+# 	group_by(variable,value) %>%
+# 	summarise(mean_score = mean(scores), sd_score = sd(scores)) %>%
+# 	mutate(magic = mean_score - sd_score)
+
+rm(all_ids,test_ids,train_ids);gc()
+
+m <- which.max(tuning_scores$scores)
+currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
+currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
+lr <- tuning_scores[["lr"]][[m]]
+mtd <- tuning_scores[["mtd"]][[m]]
+mcw <- tuning_scores[["mcw"]][[m]]
+
+ntrees <- 1e3
 p <- list(objective = "binary:logistic",
 					booster = "gbtree",
 					eval_metric = "auc",
 					nthread = 4,
-					eta = 0.002,
-					max_depth = 6,
+					eta = lr/ntrees,
+					max_depth = mtd,
 					min_child_weight = 30,
 					gamma = 0,
-					subsample = 0.85,
-					colsample_bytree = 0.7,
+					subsample = currentSubsampleRate,
+					colsample_bytree = currentColsampleRate,
 					colsample_bylevel = 0.632,
 					alpha = 0,
 					lambda = 0,
-					nrounds = 1e3)
+					nrounds = ntrees)
+
 
 m_xgb <- xgb.train(p, train_xgb, p$nrounds, list(val = val_xgb), print_every_n = 50, early_stopping_rounds = 300)
 
 features_bal <- xgb.importance(model = m_xgb) %>% as_tibble() %>% top_n(25, Gain) %>% .$Feature
 
-test_xgb_bal  <- xgb.DMatrix(data = test_rf[,features_bal] %>% as.matrix())
-train_xgb_bal <- xgb.DMatrix(data = train_rf_bal[,features_bal] %>% as.matrix(),
-														 label = train_rf_bal$target)
-val_xgb_bal <- xgb.DMatrix(data = validation_set[,features_bal] %>% as.matrix(), label = validation_set$target)
-
-m_xgb_bal <- xgb.train(p, train_xgb_bal, p$nrounds, list(val = val_xgb_bal), print_every_n = 50, early_stopping_rounds = 300)
+# test_xgb_bal  <- xgb.DMatrix(data = test_rf[,features_bal] %>% as.matrix())
+# train_xgb_bal <- xgb.DMatrix(data = train_rf_bal[,features_bal] %>% as.matrix(),
+# 														 label = train_rf_bal$target)
+# val_xgb_bal <- xgb.DMatrix(data = validation_set[,features_bal] %>% as.matrix(), label = validation_set$target)
+#
+# m_xgb_bal <- xgb.train(p, train_xgb_bal, p$nrounds, list(val = val_xgb_bal), print_every_n = 50, early_stopping_rounds = 300)
 
 
 # Classification Cross Validation --------------------------------------------------------
 
-prediction_xgb <- predict(m_xgb,val_xgb, type = "prob")
-prediction_xgb_bal <- predict(m_xgb_bal,val_xgb_bal, type = "prob")
-
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb_bal > 0.5, 1, 0))), as.factor(validation_set$target))
-
-prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
-confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
+# prediction_xgb <- predict(m_xgb,val_xgb, type = "prob")
+# prediction_xgb_bal <- predict(m_xgb_bal,val_xgb_bal, type = "prob")
+#
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb_bal > 0.5, 1, 0))), as.factor(validation_set$target))
+#
+# prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
+# confusionMatrix(data = as.factor(as.numeric(ifelse(prediction_xgb > 0.5, 1, 0))), as.factor(validation_set$target))
 
 
 # Classification Prediction --------------------------------------------------------------
+
 prediction_xgb <- predict(m_xgb,test_xgb, type = "prob")
-prediction_xgb_bal <- predict(m_xgb_bal,test_xgb_bal, type = "prob")
+# prediction_xgb_bal <- predict(m_xgb_bal,test_xgb_bal, type = "prob")
 
 # prediction_xgb <- (prediction_xgb + prediction_xgb_bal)/2
 
@@ -401,47 +436,21 @@ train_xgb <- xgb.DMatrix(data = train_rf %>% select(-target) %>% as.matrix(), la
 val_xgb <- xgb.DMatrix(data = validation_set %>% select(-target) %>% as.matrix(), label = validation_set$target)
 test_xgb  <- xgb.DMatrix(data = test_rf %>% as.matrix())
 
-# Hyperparameter Tuning
-parameterList <- expand.grid(subsample = seq(from = 0.5, to = 1, by = 0.5),
-														 colsample_bytree = seq(from = 0.4, to = 1, by = 0.2),
-														 lr = seq(from = 2, to = 10, by = 1),
-														 mtd = seq(from = 4, to = 10, by = 2))
-ntrees <- 100
+tuning_scores <- tune_xgb(train_data = train_rf,
+													target_label = "target",
+													ntrees = 100,
+													objective = "reg:linear",
+													eval_metric = "rmse")
 
-scores <- c()
+ts.plot(tuning_scores$scores)
 
-rmseErrorsHyperparameters <- for(i in 1:nrow(parameterList)){
+rm(train_xgb_params,all_ids,test_ids,train_ids);gc()
 
-	#Extract Parameters to test
-	currentSubsampleRate <- parameterList[["subsample"]][[i]]
-	currentColsampleRate <- parameterList[["colsample_bytree"]][[i]]
-	lr <- parameterList[["lr"]][[i]]
-	mtd <- parameterList[["mtd"]][[i]]
-
-	p <- list(objective = "reg:linear",
-						booster = "gbtree",
-						eval_metric = "rmse",
-						nthread = 4,
-						eta = lr/ntrees,
-						max_depth = mtd,
-						min_child_weight = 30,
-						gamma = 0,
-						subsample = currentSubsampleRate,
-						colsample_bytree = currentColsampleRate,
-						colsample_bylevel = 0.632,
-						alpha = 0,
-						lambda = 0,
-						nrounds = ntrees)
-	xgb_cv <- xgb.cv(p, train_xgb, p$nrounds, print_every_n = 5, early_stopping_rounds = 25, nfold = 5)
-	cat(paste0("... ... ... ... ... ... ... ... ...  ", floor(i/nrow(parameterList)*100), " (%)  ... ... ... ... ... \n"))
-	scores[i] <- xgb_cv$evaluation_log$test_rmse_mean %>% min()
-}
-
-m <- which.min(scores)
-currentSubsampleRate <- parameterList[["subsample"]][[m]]
-currentColsampleRate <- parameterList[["colsample_bytree"]][[m]]
-lr <- parameterList[["lr"]][[m]]
-mtd <- parameterList[["mtd"]][[m]]
+m <- which.max(tuning_scores$scores)
+currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
+currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
+lr <- tuning_scores[["lr"]][[m]]
+mtd <- tuning_scores[["mtd"]][[m]]
 
 ntrees <- 5e3
 p <- list(objective = "reg:linear",
@@ -461,8 +470,11 @@ p <- list(objective = "reg:linear",
 
 m_xgb <- xgb.train(p, train_xgb, p$nrounds, list(val = val_xgb), print_every_n = 50, early_stopping_rounds = 300)
 
+
+
 # Regression Cross Validation ---------------------------------------------
 prediction_xgb <- predict(m_xgb, val_xgb) %>% c()
+
 plot(prediction_xgb,validation_set$target)
 sum((prediction_xgb-validation_set$target)^2)
 
@@ -471,7 +483,7 @@ sum((prediction_xgb-validation_set$target)^2)
 
 prediction_reg <- predict(m_xgb, test_xgb)   %>% c()
 
-
+prediction_class <- readRDS("prediction_class")
 sub <- read_csv("data/sample_submission.csv")
 sub$PredictedLogRevenue <- (prediction_class)*prediction_reg %>% c()
 
