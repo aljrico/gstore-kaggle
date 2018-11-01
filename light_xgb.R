@@ -68,7 +68,7 @@ fn <- funs(mean,
 # Retrieve Data -----------------------------------------------------------
 
 train <- read_csv("data/train.csv") %>%
-	# sample_n(1e4)  %>%
+	sample_n(1e4)  %>%
 	flatten() %>%
 	data.table()
 
@@ -104,8 +104,8 @@ test <- test[,which(unlist(lapply(test, function(x)!all(is.na(x))))),with=F]
 train_class <- train %>%
 	mutate(date = ymd(date)) %>%
 	group_by(fullVisitorId, date) %>%
-	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
-	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>%
+	mutate(target = (ifelse(transactionRevenue == 0, 0, 1))) %>%
+	mutate(target = ifelse(target > 1, 1, target)) %>%
 	as_tibble()
 
 test_class <- test %>%
@@ -118,9 +118,9 @@ test_class <- test %>%
 tri <- 1:nrow(train_class)
 y <- train_class %>%
 	group_by(fullVisitorId) %>%
-	summarise(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
-	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>%
-	.$target_class
+	mutate(target = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+	mutate(target = ifelse(target > 1, 1, target)) %>%
+	.$target
 
 
 
@@ -311,7 +311,7 @@ rm(test_ids,train_ids,validation_ids,m_xgb,m_xgb_bal,test_rf,train_rf,train_rf_b
 
 train_reg <- train %>%
 	mutate(date = ymd(date)) %>%
-	group_by(fullVisitorId,date) %>%
+	# group_by(fullVisitorId,date) %>%
 	mutate(target_reg = as.numeric(transactionRevenue)) %>%
 	as_tibble()
 
@@ -452,7 +452,7 @@ currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
 lr <- tuning_scores[["lr"]][[m]]
 mtd <- tuning_scores[["mtd"]][[m]]
 
-ntrees <- 5e3
+ntrees <- 5e4
 p <- list(objective = "reg:linear",
 					booster = "gbtree",
 					eval_metric = "rmse",
