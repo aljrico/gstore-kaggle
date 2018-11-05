@@ -33,10 +33,12 @@ library(moments)
 library(caret)
 library(xgboost)
 
+library(GGally)
+
 library(harrypotter)
 ```
 
-# Retrieving Data
+Retrieving Data
 
 As always, we have to start by taking a look at the actual data. 
 
@@ -71,7 +73,17 @@ test  <- read_csv("data/test.csv")   %>%  flatten() %>% data.table()
 ```
 
 
-# Missing Values: Broad Treatment
+```{r}
+
+outersect <- function(x, y) {
+	sort(c(setdiff(x, y),
+				 setdiff(y, x)))
+}
+outersect(colnames(train),colnames(test))
+```
+
+
+Missing Values: Broad Treatment
 
 After flattening the columns, we can spot _a lot_ of hidden missing values. And I mean missing by those `not available in demo dataset` and similars. Make no mistake, those are missing values also and should be treated as that.
 
@@ -112,7 +124,7 @@ test  <- test[,which(unlist(lapply(test, function(x)!all(is.na(x))))),with=F]
 ```
 
 
-# Defining the Target
+Defining the Target
 
 In this competition, our task is - as awlays - to predict a target $T$. The target today is defined as the natural log of the sum of all transactions ($t$) per user ($u$). which can be written down as:
 
@@ -125,8 +137,8 @@ We can visualize its distribution (from those who have spent some money).
 train %>%
 	select(fullVisitorId,transactionRevenue) %>% 
 	na.omit() %>% 
-	group_by(fullVisitorId) %>% 
-	summarise(logRevenue = log(sum(as.numeric(transactionRevenue)))) %>% 
+	mutate(logRevenue = transactionRevenue %>% as.numeric() %>% log1p()) %>% 
+	filter(logRevenue > 0) %>% 
 	ggplot(aes(x = logRevenue)) +
 	geom_histogram(aes(y = 100*..count../sum(..count..)), colour = "black", fill = hp(4, house = "Slytherin")[[3]], bins = 50) +
 	xlab("Target") +
@@ -168,14 +180,38 @@ What these numbers are suggesting is that, before even considering predicting _h
 
 This detail is crucial because it forces us to not start by constructing a _regression model_, but a _classification_ one.
 
+By now, we should have noticed the situation that we are facing defining the `target` this way. Note that we have far more instances for `target == 0` than for `target == 1`. This is what we call _unbalanced data_. And that might be a problem, because some models that we might build will tend to label every output as `0`, in order to increase their accuracy. And that is actually going to get the model more accuracte, indeed; but is not going to be useful for us.
+
+How is that? Imagine that you are building an AI model in order to spot and diagnose illnesses in people. An extremely accurate model would be one that _always_ diagnoses no illness; a model that just claims that every person is healthy. That would be extremely accurate, wouldn't it? After all, most people are healthy the vast majority of their time. Yet being accurate, such a model turns out to be utterly pointless, because is not telling you anything that you didn't know.
+
+Anagolously, our model might tend to spot every possible customer as `non-payer` if we just aim for accuracy. Making the model accurate, but pointless.
+
+There are a myriad of techniques in order to avoid it, most of involve resampling the data. Our target variable is not that extremely unbalanced, though. I think we can be happy just aiming for another metric different from accuracy, such as [AUC](https://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_the_curve).
+
+
+# EDA
+
+This EDA (Exploratory Data Analysis) is not intended to be general purpose. Most EDA out there are made without a clear aim, just to get to know the data, know the company or their product or draw business insights out of them. That is pretty useful from a company's perspective and even interesting. It actually is one of the roles of being a Data Scientist that I enjoy the most. But in this kernel I'd like to focus the attention on prediction. We are building a prediction model and our EDA should be focus upon that direction.
+
 ## Time Dependence of the Target variable
 
+
 ```{r}
-train %>% 
-	group_by(fullVisitorId, date) %>% 
-	summarise(did_she_spend = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+train[, date := ymd(date)]
+test[,  date := ymd(date)]
+```
+
+
+```{r}
+train_class <- train %>% mutate(target_class = ifelse(as.numeric(transactionRevenue) > 0, 1, 0))
+```
+
+
+
+```{r}
+train_class %>% 
 	group_by(date) %>% 
-	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% 
+	summarise(payer_perc = 100*sum(target_class)/n()) %>% 
 	ggplot(aes(x = ymd(date), y = payer_perc)) +
 	geom_line(colour = "black", size = 0.5) +
 	geom_smooth(method = "loess",
@@ -187,30 +223,15 @@ train %>%
 	xlab("Date")
 ```
 
-What insights can we draw from this plot? First and foremost, we can not spot an obvious trend. Yet we can highlight that the usual percentage bounces between $1\%$ and $2\%$, we might get suspicious if the result of our model outputs something away from that. It seems that the store was somehow inefficient at the end of 2016 and beginning of 2017, and it surely suffered major changes that improved conversion and the tendency dramatically. I'd wonder, however, what the hell happened in April 2017. That is impressive, but it does not seem to keep improving over time. So I wouldn't expect an increasing trend in the % of payers from now on.
+What insights can we draw from this plot? First and foremost, we can not spot an obvious trend. Yet we can highlight that the usual percentage bounces between $1\%$ and $2\%$, we might get suspicious if the result of our model outputs something away from that. It seems that the store was somehow inefficient at the end of 2016 and beginning of 2017, and it surely suffered major changes that improved conversion and the tendency dramatically. I'd wonder, however, what the hell happened at the end of April 2017. That is just impressive, though it does not seem to keep improving over time. So I wouldn't expect an increasing trend in the % of payers from now on.
 
 What I really find interesting are the periodicity of some of the bounces. If you take a closer look at the plot, you can see that it has periodic spikes. I'd say that those ups and downs might have something to do with the day of the week. Let's check it out.
 
 ```{r}
-train %>% 
-	mutate(date = date %>% ymd()) %>% 
-	mutate(date = date %>% wday(label = TRUE, abbr = FALSE)) %>% 
-	group_by(fullVisitorId, date) %>% 
-	group_by(date) %>% 
-	summarise(customers = n()) %>% 
-	ggplot(aes(y = customers, x = date)) +
-	geom_col(colour = "black") +
-	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	xlab("") +
-	ylab("")
-
-train %>% 
-	mutate(date = date %>% ymd()) %>% 
-	group_by(fullVisitorId, date) %>% 
-	summarise(did_she_spend = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
+train_class %>% 
 	mutate(date = date %>% wday(label = TRUE, abbr = FALSE)) %>% 
 	group_by(date) %>% 
-	summarise(payer_perc = 100*sum(did_she_spend)/n()) %>% 
+	summarise(payer_perc = 100*sum(target_class)/n()) %>% 
 	ggplot(aes(x = date,
 						 y = payer_perc)) +
 	geom_col(colour = "black",
@@ -221,55 +242,111 @@ train %>%
 
 As we suspected, something happens during the weekends. My shot is that more "casual" people enter wandering at the store, just for browsing out of curiosity without any intention of buying anything in the first place. Yes, some people might end up buying something, but I expected that even though the gross number of customers increase on weekends, the percentage of them that buy something would drecrease.
 
-This can be used as a feature. Since we should expect that a weekend customer is less likely to buy anything.
-
-And that way - my friends - we have unkowingly snuck into the obscure realm of Exploratory Data Analysis. And we'll continue so just below.
-
-# Classification Model
-
-```{r}
-train_class <- train %>% 
-	mutate(date = ymd(date)) %>% 
-	group_by(fullVisitorId, date) %>% 
-	mutate(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>% 
-	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>% 
-	as_tibble()
-
-test_class <- test %>% 
-	mutate(date = ymd(date)) %>% 
-	group_by(fullVisitorId, date) %>% 
-	as_tibble()
-```
-
-By now, we should have noticed the situation that we are facing here. Note that we have far more instances for `target_class == 0` than for `target_class == 1`. This is what we call _unbalanced data_. And that might be a problem, because some models that we might build will tend to label every output as `0`, in order to increase their accuracy. And that is actually going to get the model more accuracte, indeed; but is not going to be useful for us.
-
-How is that? Imagine that you are building an AI model in order to spot and diagnose illnesses in people. An extremely accurate model would be one that _always_ diagnoses no illness; a model that just claims that every person is healthy. That would be extremely accurate, wouldn't it? After all, most people are healthy the vast majority of their time. Yet being accurate, such a model turns out to be utterly pointless, because is not telling you anything that you didn't know.
-
-Anagolously, our model might tend to spot every possible customer as `non-payer` if we just aim for accuracy. Making the model accurate, but pointless.
-
-There are a myriad of techniques in order to avoid it, most of involve resampling the data. Our target variable is not that extremely unbalanced, though. I think we can be happy just aiming for another metric different from accuracy, such as [AUC](https://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_the_curve).
-
-## EDA
-Note that these EDA is going to be made after resampling the data. That could seem utterly biased, and it is. The point is that, as long as we are aware of that, we'll be ok. The purpose of this EDA is not simply to explore the data as it is, but to extract relevant features. Resampling the data lets us put the features in perspective. As we will see followingly, features evenly distributed (50-50) amongs those who paid something and those who didn't, is telling us basically nothing that could help us predict the target.
-
 ### Weekends
 
-The first variable that I'd like to explore is that one already spotted in the time dependence study of our data. A variable that tells us whether the customer came to the store during a weekend.
+The first variable that I'd like to explore is the one that we have already spotted studying the time dependence of the target. A variable that tells us whether the customer came to the store during a weekend.
 
 ```{r}
 train_class %>% 
 			mutate(weekend = ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),TRUE,FALSE)) %>% 
 	ggplot(aes(x = as.factor(weekend), fill = target_class == 1)) +
 	geom_bar(position = "fill", colour = "black") +
-	scale_fill_hp(discrete = TRUE, name = "Payed?") +
+	scale_fill_hp(discrete = TRUE, name = "Payed?", house = "Gryffindor") +
 	xlab("Weekend?") +
-	# scale_x_discrete(limits = c("FALSE", "TRUE")) +
+	scale_x_discrete(limits = c("FALSE", "TRUE")) +
 	ylab("") 
 ```
 
 We can see that our common sense was somehow right, and the proportion of people that _didn't_ spend any money increases during the weekends.
 
-### channelGrouping
+### Distance between connections
+
+A bit more exotic than usual, we can focus a bit on the distance between the connections of the customers to the store. What does that mean? You'd fairly think that a user that keeps coming to the store regularly and with high frequency, has more interest in its products, and hence is more likely to end up spending some money in the store. How do we measure that? With a made-up function that creates a `lag` or a `lead` in the time series 
+
+```{r}
+create_time_fea <- function(fun = lag, n = 1){
+	tr <- train %>% data.table()
+	tr[, date := as_datetime(visitStartTime)]
+	tr[, time_var := (date - fun(date, n)) %>% as.integer()/3600]
+	output <- tr$time_var
+	rm(tr)
+	return(output)
+}
+
+for(i in 1:5){
+	train_class[str_c("next_sess", i)] <- create_time_fea(lag,i)
+	train_class[str_c("prev_sess", i)] <- create_time_fea(lead,i)
+}
+```
+
+And what is the observable effect of such variables?
+
+```{r}
+train_class %>%
+	select(prev_sess1, target_class) %>%
+	na.omit() %>% 
+	ggplot(aes(x = prev_sess1, fill = as.factor(target_class))) +
+	geom_histogram(aes(y=..count../sum(..count..)), binwidth = 2) +
+	scale_x_continuous(limits = c(-50,50)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Previous Session Distance") +
+	ylab("") +
+	facet_wrap(.~target_class, scales="free_y")
+```
+
+```{r}
+train_class %>%
+	select(next_sess1, target_class) %>%
+	na.omit() %>% 
+	ggplot(aes(x = next_sess1, fill = as.factor(target_class))) +
+	geom_histogram(aes(y=..count../sum(..count..)), binwidth = 2) +
+	scale_x_continuous(limits = c(-50,50)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Next Session Distance") +
+	ylab("") +
+	facet_wrap(.~target_class, scales="free_y")
+```
+
+The difference is subtle. Can you notice whether they are the same? According to Kolmogorov's Theorem, if we have two distributions with cumulative distributions functions defined $F_x$ and $F_y$, from which we measure $D$ defined as
+$$D = max(F_x - F_y)$$,
+
+the resulted distribution of $D$ shall follow a Kolmogorov-Smirnov distribution, if - and only if - the two distributions mentioned above are equivalent. Knowing that, we simply measure that using a KS test.
+
+```{r}
+np <- train_class %>% filter(target_class == 0) %>% .$prev_sess1
+p  <- train_class %>% filter(target_class == 1) %>% .$prev_sess1
+
+ks.test(p,np)
+```
+
+Such a small pvalue is just saying _hell no_, they are not the same distribution. You can repeat this process for the rest of variables that we have created and see that we have similar results. Which is good enough for me. Though there are some strong [criticism](https://community.dur.ac.uk/r.j.coe/teaching/critsig.htm) on statistical testing, which I find very reasonable and I could argue that hypothesis testing is kind of outdated in an era of Big Data and Machine Learning; apart from the _huge_ problem that supposes to [publication bias](https://www.jstor.org/stable/pdf/2982993.pdf). But let's leave it here and move on for now. 
+
+
+## adContent
+
+```{r}
+train_class %>% 
+	group_by(adContent, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(adContent, -value))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Channel Grouping") +
+	ylab("")
+
+train_class %>% 
+	ggplot(aes(x = adContent, fill = as.factor(target_class))) +
+	geom_bar(colour = "black", position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Channel Grouping") +
+	ylab("")
+```
+
+
+
+## channelGrouping
 
 ```{r}
 train_class %>% 
@@ -278,7 +355,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(channelGrouping, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Channel Grouping") +
 	ylab("")
 
@@ -286,7 +363,7 @@ train_class %>%
 	ggplot(aes(x = channelGrouping, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Channel Grouping") +
 	ylab("")
 ```
@@ -295,7 +372,7 @@ The results are quite informative, don't you think? It seems clear that people c
 
 The rest are confusing or non-informative. Either by a lack of data or because the distribution is evenly splitted.
 
-### Browser
+## Browser
 
 ```{r}
 train_class %>% 
@@ -304,7 +381,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(browser, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Browser") +
 	ylab("")
 
@@ -312,7 +389,7 @@ train_class %>%
 	ggplot(aes(x = browser, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Browser") +
 	ylab("")
 ```
@@ -329,7 +406,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(browser, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Browser") +
 	ylab("")
 
@@ -339,7 +416,7 @@ train_class %>%
 	ggplot(aes(x = browser, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Browser") +
 	ylab("")
 ```
@@ -348,10 +425,10 @@ We should remember that _Chrome_ is - hands down - the most used browser both in
 
 For now, I would just build a feature of type boolean that tracks whether the customer is using `Chrome` or not, and leave it there.
 
-### Source/Medium variable
+## Source/Medium variable
 
 
-#### Medium
+## Medium
 
 ```{r}
 train_class %>% 
@@ -360,7 +437,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(medium, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Medium") +
 	ylab("")
 
@@ -368,14 +445,14 @@ train_class %>%
 	ggplot(aes(x = medium, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Medium") +
 	ylab("")
 ```
 
-We could appreciate some slight diffferents based on the medium through which the custimers arrived to the store, and we can see that there are some mediums more effective than others. If I was working in the _Analytics_ team of the GStore, I would recommend them to keep the `referral` system. It leads a lot of traffic, and impressively effective, compared to organic or the others.
+We could appreciate some slight diffferents based on the medium through which the custimers arrived to the store, and we can see that there are some mediums more effective than others. If I was working in the _Analytics_ team of the GStore, I would recommend them to keep the `referral` system. It leads a lot of traffic, and impressively effective, compared to the others. The _path_ of this referral is something that we are going to study in more detail later on.
 
-#### Source
+## Source
 
 ```{r}
 train_class %>% 
@@ -386,7 +463,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(source, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Source") +
 	ylab("")
 
@@ -402,7 +479,7 @@ train_class %>%
 	ggplot(aes(x = source, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Source") +
 	ylab("")
 ```
@@ -411,7 +488,7 @@ On the other hand, we have the _Source_. Which tells from which place the traffi
 
 See that the source `mail.googleplex.com` is incredibly efficient. It streams a lot of traffic and almost everyone is paying something. Even though we have the data rebalanced, that is impressive. On the contrary, `youtubecom` seems like a poor source to drag customers from.
 
-#### Source/Medium Variable
+## Source/Medium Variable
 
 In [this](https://www.kaggle.com/erikbruin/google-analytics-eda-lightgbm-screenshots) fantastic Kernel, I saw that the author created a new variable combining both the `Source` and the `Medium`, which could be a significant feature for a model.
 
@@ -425,7 +502,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(source_medium, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Source/Medium") +
 	ylab("")
 
@@ -443,16 +520,271 @@ train_class %>%
 	ggplot(aes(x = source_medium, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Source/Medium") +
 	ylab("")
 ```
+
 
 However, the results are not much different that those that could be extracted from just the `Source`. Actually, the main important factors that I see here are whether the customer has come from the googleplex mail service, or whether the customer has come from youtube. One is positive and the other is negative, and that is all - the rest might be just for overfitting.
 
 So I would rather not adding this new feature yet.
 
-### Device
+## Source & Referral
+
+Another approach that I see in too many models is just leaving the entire feature as categorical and forget about it. You convert all levels of the factor to a unique number and voilà. This solution makes sense sometimes, I don't think it makes it now.
+
+```{r}
+train_class$source %>% unique() %>% length()
+train_class$source %>% unique() %>% sample(15)
+```
+
+Take an honest look at that and tell me whether you can spot some categorical pattern on it. Make no mistake, you leave these features as that and put them in an all-purpose algorithm and you are forcing your model to train on noise. You are _begging_ for overfitting.
+
+It is far too easy to forget that training a Machine Learning models requires a bit of qualitative analysis of the data; not just hocus pocus on a couple of algorithms.
+
+I am a fair advocate of black magic, but this time I'd like to go a bit more old-fashioned and build manual features out of this situations.
+
+Same thing happens with the `referralPath` variable:
+
+```{r}
+train_class$referralPath %>% unique() %>% length()
+train_class$referralPath %>% unique() %>% sample(15)
+```
+
+## #Length
+
+That does not mean that these variables are useless, we can draw interesting insights out of them and build useful features. The first thing that caught my eye was how variable the length of this values seem to be. Look at them, you have some of them with the length of a simple word, whereas others are as big as whole sentences. Let's take a look at that.
+
+```{r}
+train_class %>% 
+    mutate(source_length = nchar(source)) %>%
+	group_by(source_length, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.numeric(source_length))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Source Length") +
+	ylab("")
+```
+
+Weirdly enough, there are some interesting spikes that we could look at.
+
+```{r}
+top_s_lengths <- train_class %>% 
+	mutate(source_length = nchar(source)) %>%
+	group_by(source_length, target_class) %>% 
+	summarise(value = n()) %>% 
+	arrange(-value) %>% 
+	ungroup() %>% 
+	top_n(3) %>% 
+	.$source_length
+
+train_class %>% 
+	mutate(source_length = nchar(source)) %>%
+	mutate(source_length_cat = ifelse(source_length %in% top_s_lengths, "Common", "Uncommon")) %>% 
+	group_by(source_length_cat, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.factor(source_length_cat))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Source Length Category") +
+	ylab("")
+
+train_class %>% 
+	mutate(source_length = nchar(source)) %>%
+	mutate(source_length_cat = ifelse(source_length %in% top_s_lengths, "Common", "Uncommon")) %>% 
+	ggplot(aes(x = source_length_cat, fill = as.factor(target_class))) +
+	geom_bar(colour = "black", position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Source Length Category") +
+	ylab("")
+	
+```
+
+It exist a slight difference, indeed. It would be difficult to say whether it is representative enough to consider it a solid feature.
+
+Let's take glance at the same measure from `referralPath`.
+
+```{r}
+train_class %>% 
+    mutate(path_length = nchar(referralPath)) %>%
+	group_by(path_length, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.numeric(path_length))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Path Length") +
+	ylab("")
+```
+
+```{r}
+top_s_lengths <- train_class %>% 
+	mutate(path_length = nchar(referralPath)) %>%
+	group_by(path_length, target_class) %>% 
+	summarise(value = n()) %>% 
+	arrange(-value) %>% 
+	ungroup() %>% 
+	top_n(3) %>% 
+	.$path_length
+
+train_class %>% 
+	mutate(path_length = nchar(referralPath)) %>%
+	mutate(path_length_cat = ifelse(path_length %in% top_s_lengths, "Common", "Uncommon")) %>% 
+	group_by(path_length_cat, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.factor(path_length_cat))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("path Length Category") +
+	ylab("")
+
+train_class %>% 
+	mutate(path_length = nchar(referralPath)) %>%
+	mutate(path_length_cat = ifelse(path_length %in% top_s_lengths, "Common", "Uncommon")) %>% 
+	ggplot(aes(x = path_length_cat, fill = as.factor(target_class))) +
+	geom_bar(colour = "black", position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("path Length Category") +
+	ylab("")
+	
+```
+
+Again, same.
+
+Now I want to try something different and a bit less obvious. Observing closely the nature of these two variables, we could spot something interesting that has to be with the _depth_ of that value. By _depth_ I mean how deep in some site you are before coming to the store. Let's say that you got this value for the path: `/od/Things-To-Do-in-Silicon-Valley/fl/How-To-Visit-the-Googleplex-the-Google-Head-Office-in-Mountain-View.htm"`.  This is far more deep than just `/analytics/web/`, right? How do we know that? By the number of `/` present. Same scenario with `source` but with dots `.` instead of `/`. Hence I suggest building a feature that comprises this sense of _depth_:
+
+```{r}
+train_class %>% 
+  mutate(path_depth = str_count(referralPath, '/')) %>%
+	group_by(path_depth, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.numeric(path_depth))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Path Depth") +
+	ylab("")
+
+train_class %>% 
+  mutate(source_depth = str_count(source, '.')) %>%
+	group_by(source_depth, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = as.numeric(source_depth))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Source Depth") +
+	ylab("")
+```
+
+Instead of digging deeper into catogires within these values, I'd like to spot something against these features. It is obvious that the length and depth of both `source` and `referralPath` is going to correlate. I mean, given our definitions the deeper the value, the longer is going to be. So I thought of creating another new variable called _complexity_ (lacking a better word) that encapsules the proportion between depth and length.
+
+```{r}
+train_class %>% 
+  mutate(path_depth = str_count(referralPath, '\\/')) %>%
+	mutate(path_length = nchar(referralPath)) %>% 
+	mutate(path_complexity = path_depth/path_length) %>% 
+	ggplot(aes(x = as.numeric(path_complexity))) +
+	geom_histogram(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Path Complexity") +
+	ylab("")
+```
+
+```{r}
+train_class %>% 
+  mutate(source_depth = str_count(source, '\\.')) %>%
+	mutate(source_length = nchar(source)) %>% 
+	mutate(source_complexity = source_depth/source_length) %>% 
+	ggplot(aes(x = as.numeric(source_complexity))) +
+	geom_histogram(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Source Complexity") +
+	ylab("")
+```
+
+
+See what happens when the value of `path_complexity` is 1. What would that mean? That the `referralPath` is exactly `/`. Is this a direct link or something like that? I'm not sure, but it makes sense that it is something more _direct_ to the store. What could define a more interested customer, right?
+
+Let's check:
+```{r}
+train_class %>% 
+  mutate(direct_referral = ifelse(referralPath == "/", "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(direct_referral))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Path Complexity") +
+	ylab("")
+
+train_class %>% 
+  mutate(direct_referral = ifelse(referralPath == "/", "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(direct_referral))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class)), position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Direct Referral") +
+	ylab("")
+```
+
+Indeed, this can be used as variable. We got it.
+
+Now let's move to a bit more specific cases. Looking closely at the `source` variable, you can see some interesting kind of sources. For example, those who say `share`. There are many of them, and their source looks kind of weird compared to the rest.
+
+```{r}
+train_class %>% 
+  mutate(shared_source = ifelse(grepl("shared", source), "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(shared_source))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Shared Source") +
+	ylab("")
+
+train_class %>% 
+  mutate(shared_source = ifelse(grepl("login", source), "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(shared_source))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class)), position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Shared Source") +
+	ylab("")
+```
+There are only a few of them, and it does not look promising. Now I'd like to look at something similar. Some of the sources say `login` in it. Is this an indicator of a different pattern of coming customers?
+
+```{r}
+train_class %>% 
+  mutate(login_source = ifelse(grepl("login", source), "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(login_source))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Login Source") +
+	ylab("")
+
+train_class %>% 
+  mutate(login_source = ifelse(grepl("login", source), "Yes", "No")) %>%
+	ggplot(aes(x = as.factor(login_source))) +
+	geom_bar(colour = "black", aes(fill = as.factor(target_class)), position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Login Source") +
+	ylab("")
+```
+
+
+Kind of the same, there are only a few of them and they don't seem to behave any differently. Sadly, it is usual to spend most of the time looking for something that ends up being not that useful. This is science, folks.
+
+## Device
 
 ```{r}
 train_class %>% 
@@ -461,7 +793,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(deviceCategory, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Device") +
 	ylab("")
 
@@ -469,14 +801,14 @@ train_class %>%
 	ggplot(aes(x = deviceCategory, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Device") +
 	ylab("")
 ```
 
 As you might have noted by now, I like to simplify. In this feature I see a main driver: Whether a user is using the desktop or not. Mobile and Tablt interactions seem a bit more casual, less oriented to end up buying something. So I would suggest to build another boolean feature that jusks asks whether a user is in their desktop or not. 
 
-### Operating System
+## Operating System
 
 As it has happened before, we have too many options, and most of them have simply not enough instances. So we are going to filter the top most important ones.
 
@@ -489,7 +821,7 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(operatingSystem, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Operating System") +
 	ylab("")
 
@@ -505,7 +837,7 @@ train_class %>%
 	ggplot(aes(x = operatingSystem, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Operating System") +
 	ylab("")
 ```
@@ -523,13 +855,13 @@ train_class %>%
 	ggplot(aes(y = value, x = reorder(operatingSystem, -value))) +
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Operating System") +
 	ylab("") +
 	facet_grid(ifelse(deviceCategory == 'desktop', "Desktop", "Non-Desktop") ~.)
 
 top_os <- train_class %>% 
-	# filter(deviceCategory == "desktop") %>% 
+	filter(deviceCategory == "desktop") %>% 
 	group_by(operatingSystem, target_class) %>% 
 	summarise(value = n()) %>% 
 	ungroup() %>% 
@@ -541,7 +873,7 @@ train_class %>%
 	ggplot(aes(x = operatingSystem, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-	scale_fill_hp(name = "Payed?", discrete = TRUE) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
 	xlab("Operating System") +
 	ylab("") +
 	facet_grid(ifelse(deviceCategory == 'desktop', "Desktop", "Non-Desktop") ~.)
@@ -553,8 +885,12 @@ People that is interested in actually buying goodies in the GStore aren't casual
 
 The interactions between `Operating System` and whether the device is a `Dekstop` are interesting and informative, we should use them. 
 
-## Feature Engineering
+# Feature Engineering
 
+Now we are going to put all this amazing stuff that we have found out about the nature of our data, and build interesting features out of them. In order to do that, we are going to build simple elegant functions, so we'll only have to call them in order to performe the Feature Engineering that we have designed.
+
+
+Firstly, we need a function that transforms categorical data into numeric. Most algorithms are not able to process non-numeric variables, and the ones who do they are doing this behind the scences; so better do it yourself and be sure that it is done the way you want.
 
 ```{r Custom Functions, message = FALSE, echo = FALSE}
 numerise_data <- function(data, numeric_columns){
@@ -573,171 +909,208 @@ numerise_data <- function(data, numeric_columns){
 	data[is.na(data)] <- 0
 	return(data)
 }
+```
 
-outersect <- function(x, y) {
-	sort(c(setdiff(x, y),
-				 setdiff(y, x)))
+But we aren't encoding all categorical variables simply into unordered numbers, aren't we? We have discussed plenty of possibilities for some features in the previous section that we should address.
+
+In order to do that in an ordered manner and with elegant code, I like to define a function simply called `feature_engineering` where we do all the necessary mungings in order to create our features, and call it.
+
+```{r}
+feature_engineering <- function(tr_te, models = NULL, tri = 0){
+	tr_te <- data.table(tr_te)
+	# Building Simple Features
+		cat("... Building Simple Features ... \n")
+	tr_te[, weekend := ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)]
+	tr_te[, wday := date %>% wday(label = TRUE, abbr = FALSE)]
+	tr_te[, year := date %>% year()]
+	tr_te[, month := date %>% month()]
+	tr_te[, hour := as.numeric(hour(as_datetime(visitStartTime)))]
+	tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
+	tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
+	tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
+	tr_te[, source_from_youtube := ifelse(source == 'youtube.com', 1, 0) %>% as.numeric()]
+	tr_te[, is_medium_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
+	tr_te[, is_device_desktop := ifelse(deviceCategory == 'desktop', 1, 0) %>% as.numeric()]
+	tr_te[, is_device_macbook := is_device_desktop*ifelse(operatingSystem == "Macintosh", 1, 0)]
+	tr_te[, windows_desktop := is_device_desktop*ifelse(operatingSystem == 'Windows', 1, 0)]
+	tr_te[, is_device_chromebook := ifelse(operatingSystem == "Chrome OS", 1, 0)]
+	tr_te[, is_device_linux := ifelse(operatingSystem == "Linux", 1, 0)]
+	tr_te[, is_phone_ios := ifelse(operatingSystem == "iOS", 1, 0)]
+	tr_te[, is_phone_android := ifelse(operatingSystem == "Android", 1, 0)]
+	tr_te[, is_phone_windows := ifelse(operatingSystem == "Windows Phone", 1, 0)]
+	tr_te[, single_visit := ifelse(visitNumber == 1,1,0) ]
+	tr_te[, hits_ratio := as.numeric(hits)/as.numeric(pageviews)]
+	tr_te[, domain_site := gsub("^.*\\.","", networkDomain)]
+	tr_te[, adwordsClickInfo.isVideoAd := ifelse(is.na(adwordsClickInfo.isVideoAd), 1, 0)]
+	tr_te[, source_shared := ifelse(grepl("shared", source), 1, 0)]
+	tr_te[, source_platform := ifelse(grepl("login", source), 1, 0)]
+	tr_te[, source_depth := str_count(source, '.')]
+	tr_te[, source_length := nchar(source)]
+	tr_te[, source_complexity := source_depth/source_length]
+	tr_te[, path_depth := str_count(referralPath, '/')]
+	tr_te[, path_length := nchar(referralPath)]
+	tr_te[, path_complexity := path_depth/path_length]
+	# tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
+
+	# Manual Combinations
+		cat("... Manual Combinations ... \n")
+	tr_te[, browser_dev := str_c(browser, "_", deviceCategory)]
+	tr_te[, browser_os := str_c(browser, "_", operatingSystem)]
+	tr_te[, browser_chan := str_c(browser,  "_", channelGrouping)]
+	tr_te[, campaign_medium := str_c(campaign, "_", medium)]
+	tr_te[, chan_os := str_c(operatingSystem, "_", channelGrouping)]
+	tr_te[, country_adcontent := str_c(country, "_", adContent)]
+	tr_te[, country_medium := str_c(country, "_", medium)]
+	tr_te[, country_source := str_c(country, "_", source_depth)]
+	tr_te[, dev_chan := str_c(deviceCategory, "_", channelGrouping)]
+
+	tr_te %<>% as_tibble()
+
+	# Dummy Variables
+		cat("... Dummy Variables ... \n")
+  small_features <- c('channelGrouping','deviceCategory','adwordsClickInfo.slot','adwordsClickInfo.adNetworkType','medium','continent')
+ 	dummies <- caret::dummyVars( ~ ., data = tr_te[small_features], fullRank=T)
+ 	tr_te %<>% cbind(predict(dummies, tr_te))
+
+	# Automatic Combinations
+		cat("... Automatic Combinations ... \n")
+	for (i in c("city", "continent", "country", "metro", "domain_site", "region", "subContinent"))
+		for (j in c("browser", "deviceCategory", "operatingSystem", "source_depth"))
+			tr_te[str_c(i, "_", j)] <- str_c(tr_te[[i]], tr_te[[j]], sep = "_")
+
+	# Time Features
+		cat("... Time Features ... \n")
+	for (i in 1:5) {
+		tr_te[str_c("next_sess", i)] <- create_time_fea(lag, i)
+		tr_te[str_c("prev_sess", i)] <- create_time_fea(lead, i)
+	}
+
+	tr_te %<>% data.table()
+	all_ids <- tr_te$fullVisitorId
+
+	tr_te <- tr_te %>%
+		select(-visitId, -sessionId, -fullVisitorId) %>%
+		numerise_data() %>%
+		as_tibble()
+
+	tr_te %<>% data.table()
+
+
+	# Clean
+		cat("... Cleaning up ... \n")
+	tr_te[, date := NULL]
+	tr_te[, visitStartTime := NULL]
+	tr_te[, source := NULL]
+	tr_te[, medium := NULL]
+	tr_te[, browser := NULL]
+	tr_te[, operatingSystem := NULL]
+	tr_te[, deviceCategory := NULL]
+	tr_te[, visitNumber := NULL]
+	tr_te[, networkDomain := NULL]
+
+	# Remove redundant columns
+	tr_te <- tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
+	constant_columns <- whichAreConstant(tr_te, verbose=FALSE)
+	if(length(constant_columns > 0)) tr_te <- subset(tr_te,select = -c(constant_columns)) %>% as_tibble()
+
+	tr_te[is.na(tr_te)] <- 0
+	return(tr_te)
 }
-```
 
-Now we are going to put all this amazing stuff that we have found out about the nature of our data, and build interesting features out of them.
+# Remove Outliers
+train %>% filter(country != 'Anguilla') %>% data.table()
 
-First of all, we need to consistently amalgamate both the `train` and `test` data sets. Saving for later the ids correspondent to each set.
-
-```{r Feature Engineering, message = FALSE}
-tri <- 1:nrow(train_class)
-y <- train_class %>%
-	group_by(fullVisitorId) %>%
-	summarise(target_class = sum(ifelse(transactionRevenue == 0, 0, 1))) %>%
-	mutate(target_class = ifelse(target_class > 1, 1, target_class)) %>%
-	.$target_class
-
-train_ids <- train_class$fullVisitorId %>% unique()
-test_ids <-  test_class$fullVisitorId %>% unique()
-
-tmp <- outersect(colnames(train_class),colnames(test_class))
-
-train_class <- train_class %>% ungroup() %>% as_tibble()
-
-tr_te <- train_class[ , -which(names(train_class) %in% tmp)] %>%
-	rbind(test_class %>% ungroup()) %>%
-	data.table()
-
-rm(train_class, test_class, tmp)
-gc()
-```
-
-
-Now here we go. Based on our EDA, we can reasonably construct these features. Note that we are 
-
-```{r, message = FALSE}
-tr_te[, weekend := ifelse((date %>% wday(label = TRUE, abbr = FALSE)) %in% c("Saturday", "Sunday"),1,0)]
-tr_te[, date := NULL]
-tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
-tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
-tr_te[, browser := NULL]
-tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
-tr_te[, source_from_youtube := ifelse(source == 'youtube.com', 1, 0) %>% as.numeric()]
-tr_te[, source := NULL]
-tr_te[, is_medium_referral := ifelse(medium == 'referral', 1, 0) %>% as.numeric()]
-tr_te[, medium := NULL]
-tr_te[, is_device_desktop := ifelse(deviceCategory == 'desktop', 1, 0) %>% as.numeric()]
-tr_te[, is_device_macbook := is_device_desktop*ifelse(operatingSystem == "Macintosh", 1, 0)]
-tr_te[, windows_desktop := is_device_desktop*ifelse(operatingSystem == 'Windows', 1, 0)]
-tr_te[, is_device_chromebook := ifelse(operatingSystem == "Chrome OS", 1, 0)]
-tr_te[, is_device_linux := ifelse(operatingSystem == "Linux", 1, 0)]
-tr_te[, is_phone_ios := ifelse(operatingSystem == "iOS", 1, 0)]
-tr_te[, is_phone_android := ifelse(operatingSystem == "Android", 1, 0)]
-tr_te[, operatingSystem := NULL]
-tr_te[, deviceCategory := NULL]
-tr_te[, single_visit := ifelse(visitNumber == 1,1,0) ]
-tr_te[, hits_ratio := as.numeric(hits)/as.numeric(pageviews)]
-```
-
-Now we are going to turn every feature that we haven't been able to convert into dummy variables as numeric, and collapse them all.
-```{r}
-tr_te <- tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
-
-all_ids <- tr_te$fullVisitorId
-
-tr_te <- tr_te %>%
-	select(-visitId,-visitStartTime, -sessionId, -fullVisitorId) %>%
-	numerise_data() %>%
-	data.table()
-	
-tr_te$fullVisitorId <- all_ids %>% as.character()
-
-collapse_fn <- funs(mean, 
-					 # sd, 
-					 # min, 
-					 # max, 
-					 # sum, 
-					  n_distinct, 
-					 # kurtosis, 
-					 # skewness, 
-					 .args = list(na.rm = TRUE))
-
-tr_te <- tr_te %>%
-	group_by(fullVisitorId) %>%
-	summarise_all(collapse_fn)
-
-tr_te[is.na(tr_te)] <- 0
-```
-
-## XGB
-
-We are going to get started with this classification model using xgboost. At first I thought using an easier to understand Random Forest. But `xgb` tends to perform better in Kaggle competitions; and I assume that we all want to learn how to win these things. Let's go directly to the stuff that works.
-
-`XGBoost` - or eXtreme Gradient Boosting - is an advanced implementation of [gradient boosting algorithm](https://en.wikipedia.org/wiki/Gradient_boosting) for both regression and classification problems, which ensembles weak prediction models. Normally decision trees.
-
-### XGB Matrices
-
-First things first. Let's divide training data sets, set and validation.
-
-```{r}
-validation_ids <- sample(train_ids, floor(length(train_ids)*0.1))
-
-test_rf <- tr_te %>%
-	ungroup() %>%
-	filter(fullVisitorId %in% test_ids) %>%
-	dplyr::select(-fullVisitorId) %>%
-	as_tibble()
-
-train_rf <- tr_te %>%
-	ungroup() %>%
-	filter(fullVisitorId %in% train_ids) %>%
-	as_tibble()
-
+# Define Targets
+y <- log1p(as.numeric(train$transactionRevenue))
 y[is.na(y)] <- 0
-train_rf$target <- y
+y_class <- ifelse(y>0,1,0)
 
-validation_set <- train_rf %>%
-	filter(fullVisitorId %in% validation_ids) %>%
-	dplyr::select(-fullVisitorId) %>%
-	as_tibble()
+tri <- 1:nrow(train)
+tr_id <- train$fullVisitorId
+te_id <- test$fullVisitorId
 
-train_rf <- train_rf %>%
-	filter(!(fullVisitorId %in% validation_ids)) %>%
-	dplyr::select(-fullVisitorId)
-	
-rm(tr_te);gc()
+train[, transactionRevenue := NULL]
+train[, campaignCode := NULL]
+train %<>% as_tibble()
+
+# Build tr_te
+tr_te <- train %>%
+	bind_rows(test) %>%
+	select_if(has_many_values) %>%
+	data.table()
+
+# Basic Feature Engineering
+tr_te <- feature_engineering(tr_te) %>% as_tibble()
 ```
 
-Now, be aware that the XGB is not able to absorb data frames the way other packages do. They have this special kind of matrix, that do not contain the target variable, that let's them compute everything faster and without filling all the memory. 
+
+Most of the stuff that you see in there is usual. Typical automatic combinations between categorical variables, creating dummy variables out of small categorical variables and all the insights that we have extracted from the EDA.
+
+
+Now we are going to get Folds. What does that mean? Well, in order to prevent [overfitting](https://en.wikipedia.org/wiki/Overfitting) it is common to do what we call [cross validation](https://en.wikipedia.org/wiki/Cross-validation_(statistics)) or _out-of-sample testing_. The thing is to train the model on one data sets and making predictions on another. Trying to predict some data using a model trained on that same data is like asking your grandma who is the most beautiful boy in the world. You'll be told what you want to hear, but deep in your heart you know that the answer is not quite representative. Don't fool yourself, don't overfit. We are going to do this 5 times and average the results.
 
 ```{r}
-y <- train_rf$target
-train_xgb <- xgb.DMatrix(data = train_rf %>% select(-target) %>% as.matrix(),
-												 label = y)
-val_xgb <- xgb.DMatrix(data = validation_set %>% select(-target) %>% as.matrix(),
-											 label = validation_set$target)
-test_xgb  <- xgb.DMatrix(data = test_rf %>% as.matrix())
+# Get Folds
+tr_val_ind <- get_folds(train, "fullVisitorId", 5)
 ```
 
-### Hyperparameter Tuning
+I'm getting folds now before mentioning any model because now I can do this:
 
-The capabilities of this algorithm are absolutely astonishing. But, contrary to other simpler algorithms, its performance depends tremendously in choosing the hyperparameters wisely.
+```{r}
+rm(train,test);gc()
+```
+
+And spare some memory before going deeper.
+
+
+# XGB Models
+
+Now we are getting to the fancy stuff, Machine Learning! As you'd probably have noticed in the code above, I had saved for later a couple of targets. One continous and one categorical. We have discussed during the introduction of this long-ass kernel that we would better go first for a classification model. But wait, this is a regression problem, we need to minimize `RMSE`. And more problematic, we have instances for every connection of every user that has ever wandered into the GStore, but we need to predict the money spent by user, not by session. How do we commbine all of that? With *iterations*. We are going to train three chained models:
+
+* *Classification Model on Sessions*. This model will simply try to predict _whether_ a user has spent any money at each session. Simple, beautiful.
+* *Regression Model on Sessions*. This guy here is going to get the outcome of the previous model and use it as a feature in order to train another similar model that tries, this time, to predict _how much_ money a user has spent at each session.
+* *Regression Model on Users*. Finally, our last iteration is going to train a model using the outcome of the previous model as a feature, in which it will try to predict _how much_ money a user has spent _over all his sessions_.
+
+Note that from now on I'm going to get a bit technical on XGB models and I assume that you have read (or are able to do it) the documentation and have played with the models a bit. If not, well, good luck.
+
+
+## Tuning Hyperparameters
+
+If you google a bit about XGB, you'll find that one of the trickiest aspects of training them is that you need to choose carefully and very wisely the values for each of the hyperparameters. Some of them lead the model to be prone to overfitting if too high, or too underfitting if too low. 
 
 So we need to put some values. Of course, there are some standard values that everyone uses, but the rest might change largely from one problem to another. Choosing them is a form of art by itself, but reality is that most people end up choosing them by trial and error.
 
 We are going to do that, but more efficiently. We'll craft a function that iterates over random subsamples of the data using different values for those hyperparameters. We are going to evaluate how those hyperparameters effect the performance of our model using Cross Validation. And then we'll chose.
 
 ```{r}
-tune_xgb <- function(train_data, target_label, ntrees = 100, objective = "binary:logistic", eval_metric = "error"){
+
+tune_xgb <- function(train_data, target_label, ntrees = 100, objective = "binary:logistic", eval_metric = "error", fast = TRUE){
 	train_data <- as.data.frame(train_data)
 
 	# Count Event Rate
 	if(objective == "binary:logistic") event_rate <- ceiling(1/(sum(train_data$target == 1)/length(train_data$target)))
 	if(!(objective == "binary:logistic")) event_rate <-  10
-
-	parameterList <- expand.grid(subsample = seq(from = 0.5, to = 1, by = 0.5),
-								 colsample_bytree = seq(from = 0.4, to = 1, by = 0.2),
-								 lr = seq(from = 2, to = 14, by = 4),
-								 mtd = seq(from = 4, to = 10, by = 2),
-								 mcw = seq(from = event_rate, to = event_rate*5, by = floor(event_rate) ))
+	if(fast){
+		parameterList <- expand.grid(subsample = seq(from = 1, to = 1, by = 1),
+																 colsample_bytree = seq(from = 0.5, to = 1, by = 0.5),
+																 lr = seq(from = 2, to = 10, by = 2),
+																 mtd = seq(from = 4, to = 10, by = 2),
+																 mcw = seq(from = event_rate, to = event_rate, by = event_rate))
+	}else{
+		parameterList <- expand.grid(subsample = seq(from = 0.5, to = 1, by = 0.5),
+																 colsample_bytree = seq(from = 0.4, to = 1, by = 0.2),
+																 lr = seq(from = 1, to = 15, by = 1),
+																 mtd = seq(from = 2, to = 16, by = 2),
+																 mcw = seq(from = floor(event_rate/2), to = event_rate*10, by = floor(event_rate*2)))
+	}
 	scores <- c()
 
+	pb <- progress_bar$new(
+		format = " Tuning Hyperparameters [:bar] :percent eta: :eta",
+		total = nrow(parameterList), clear = FALSE, width= 60)
+
 	for(i in 1:nrow(parameterList)){
+		pb$tick()
 	 	# Define Subsample of Training Data
 	 	sample_size <- floor(nrow(train_data)/100)
 	 	sample_size <- max(c(sample_size,1e4))
@@ -768,7 +1141,7 @@ tune_xgb <- function(train_data, target_label, ntrees = 100, objective = "binary
 	 						nrounds = ntrees)
 
 	 	xgb_cv <- xgb.cv(p, train_xgb_params, p$nrounds, print_every_n = 5, early_stopping_rounds = 25, nfold = 5, verbose = 0)
-	 	cat(paste0("... ", floor(i/nrow(parameterList)*100), " (%)  ... \n"))
+
 	 	if(eval_metric == "auc") scores[i] <- xgb_cv$evaluation_log$test_auc_mean %>% max()
 	 	if(eval_metric == "error") scores[i] <- xgb_cv$evaluation_log$test_error_mean %>% min()
 	 	if(eval_metric == "rmse") scores[i] <- xgb_cv$evaluation_log$test_rmse_mean %>% min()
@@ -778,5 +1151,78 @@ tune_xgb <- function(train_data, target_label, ntrees = 100, objective = "binary
 }
 ```
 
+See that the function is build such that you can decide which evaluation metric you want.
+
+## First Iteration: Classificadion Model on Sessions
+
+```{r}
+test <- xgb.DMatrix(data = data.matrix(tr_te[-tri, ]))
+pred_tr <- rep(0, length(tri))
+pred_te <- 0
+
+train_tune <- tr_te[tri,]
+train_tune$target <- y_class
+tuning_scores <- tune_xgb(train_data = train_tune,
+													target_label = "target",
+													ntrees = 100,
+													objective = "binary:logistic",
+													eval_metric = "auc",
+													fast = TRUE)
+rm(train_tune);gc()
+ts.plot(tuning_scores$scores)
+
+m <- which.max(tuning_scores$scores)
+currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
+currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
+lr <- tuning_scores[["lr"]][[m]]
+mtd <- tuning_scores[["mtd"]][[m]]
+mcw <- tuning_scores[["mcw"]][[m]]
+
+ntrees <- 1e3
+
+p <- list(objective = "binary:logistic",
+					booster = "gbtree",
+					eval_metric = "auc",
+					nthread = 4,
+					eta = lr/ntrees,
+					max_depth = mtd,
+					min_child_weight = 30,
+					gamma = 0,
+					subsample = currentSubsampleRate,
+					colsample_bytree = currentColsampleRate,
+					colsample_bylevel = 0.632,
+					alpha = 0,
+					lambda = 0,
+					nrounds = ntrees)
+
+for (i in seq_along(tr_val_ind)) {
+	cat("Group fold:", i, "\n")
+
+	tr_ind <- tr_val_ind[[i]]$tr
+	val_ind <- tr_val_ind[[i]]$val
+
+	dtrain <- xgb.DMatrix(data = data.matrix(tr_te[tr_ind, ]), label = y_class[tr_ind])
+	dval <- xgb.DMatrix(data = data.matrix(tr_te[val_ind, ]), label = y_class[val_ind])
+
+	cv <- xgb.train(p, dtrain, p$nrounds, list(val = dval), print_every_n = 50, early_stopping_rounds = 300)
+
+	pred_tr[val_ind] <- (predict(cv, dval, type = "prob"))
+	pred_te <- pred_te + (predict(cv, dtest, type = "prob"))
+
+	rm(dtrain, dval, tr_ind, val_ind)
+	gc()
+}
+
+pred_tr <- ifelse(pred_tr < 0, 0, pred_tr)
+pred_te <- ifelse(pred_te < 0, 0, pred_te / length(tr_val_ind))
+pred_class <- pred_te
+
+xgb.importance(model = cv) %>% as_tibble() %>% top_n(25, Gain) %>%
+	ggplot(aes(x = reorder(Feature, Gain), y = Gain)) +
+	geom_col() +
+	coord_flip()
+
+rm(dtest, cv); gc()
+```
 
 To be continued... 

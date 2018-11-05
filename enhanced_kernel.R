@@ -74,7 +74,7 @@ tuning_scores <- tune_xgb(train_data = train_tune,
 rm(train_tune);gc()
 ts.plot(tuning_scores$scores)
 
-m <- which.min(tuning_scores$scores)
+m <- which.max(tuning_scores$scores)
 currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
 currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
 lr <- tuning_scores[["lr"]][[m]]
@@ -110,8 +110,8 @@ for (i in seq_along(tr_val_ind)) {
 	set.seed(0)
 	cv <- xgb.train(p, dtrain, p$nrounds, list(val = dval), print_every_n = 50, early_stopping_rounds = 300)
 
-	pred_tr[val_ind] <- expm1(predict(cv, dval))
-	pred_te <- pred_te + expm1(predict(cv, dtest))
+	pred_tr[val_ind] <- (predict(cv, dval, type = "prob"))
+	pred_te <- pred_te + (predict(cv, dtest, type = "prob"))
 
 	rm(dtrain, dval, tr_ind, val_ind)
 	gc()
@@ -124,7 +124,7 @@ cols <- colnames(tr_te)
 imp <- xgb.importance(cols, model = cv) %>%
 	xgb.plot.importance(top_n = 25)
 
-rm(dtest, cv, train_tune); gc()
+rm(dtest, cv); gc()
 
 saveRDS(pred_tr, "pred_tr")
 saveRDS(pred_te, "pred_te")
@@ -132,33 +132,34 @@ saveRDS(pred_te, "pred_te")
 
 # MetaFeatures ------------------------------------------
 
-tr_preds <- tr_te %>% dplyr::slice(tri)
-tr_preds[, fullVisitorId := tr_id]
-tr_preds[, pred := pred_tr]
-tr_preds <- tr_preds %>%
-	dplyr::select(fullVisitorId,pred) %>%
-	group_by(fullVisitorId) %>%
-	mutate(pred_num = str_c("pred", 1:n())) %>%
-	spread(pred_num,pred) %>%
-	data.table()
-tr_preds[, p_mean := apply(select(., starts_with("pred")), 1, mean, na.rm = TRUE)]
-tr_preds[, p_sd   := apply(select(., starts_with("pred")), 1, sd, na.rm = TRUE)]
+# tr_preds <- tr_te %>% dplyr::slice(tri) %>% data.table()
+# tr_preds[, fullVisitorId := tr_id]
+# tr_preds[, pred := pred_tr]
+# tr_preds <- tr_preds %>%
+# 	dplyr::select(fullVisitorId,pred) %>%
+# 	group_by(fullVisitorId) %>%
+# 	mutate(pred_num = str_c("pred", 1:n())) %>%
+# 	spread(pred_num,pred) %>%
+# 	data.table()
+# tr_preds[, p_mean := apply(select(., starts_with("pred")), 1, mean, na.rm = TRUE)]
+# tr_preds[, p_sd   := apply(select(., starts_with("pred")), 1, sd, na.rm = TRUE)]
+#
+# te_preds <- tr_te %>% dplyr::slice(-tri)
+# te_preds[, fullVisitorId := tr_id]
+# te_preds[, pred := pred_te]
+# te_preds <- te_preds %>%
+# 	dplyr::select(fullVisitorId,pred) %>%
+# 	group_by(fullVisitorId) %>%
+# 	mutate(pred_num = str_c("pred", 1:n())) %>%
+# 	spread(pred_num,pred) %>%
+# 	data.table()
+# te_preds[, p_mean := apply(select(., starts_with("pred")), 1, mean, na.rm = TRUE)]
+# te_preds[, p_sd   := apply(select(., starts_with("pred")), 1, sd, na.rm = TRUE)]
+#
+# tr_te_preds <- bind_rows(tr_preds, te_preds)
+# tr_te %<>% cbind(tr_te_preds) %>% data.table()
 
-te_preds <- tr_te %>% dplyr::slice(-tri)
-te_preds[, fullVisitorId := tr_id]
-te_preds[, pred := pred_te]
-te_preds <- te_preds %>%
-	dplyr::select(fullVisitorId,pred) %>%
-	group_by(fullVisitorId) %>%
-	mutate(pred_num = str_c("pred", 1:n())) %>%
-	spread(pred_num,pred) %>%
-	data.table()
-te_preds[, p_mean := apply(select(., starts_with("pred")), 1, mean, na.rm = TRUE)]
-te_preds[, p_sd   := apply(select(., starts_with("pred")), 1, sd, na.rm = TRUE)]
-
-tr_te_preds <- bind_rows(tr_preds, te_preds)
-tr_te %<>% cbind(tr_te_preds) %>% data.table()
-rm(tr_preds,te_preds);gc()
+tr_te$meta_feature <- c(pred_tr,pred_te)
 
 
 # Train Second Iteration --------------------------------------------------

@@ -35,8 +35,13 @@ feature_engineering <- function(tr_te, models = NULL, tri = 0){
 	tr_te[, adwordsClickInfo.isVideoAd := ifelse(is.na(adwordsClickInfo.isVideoAd), 1, 0)]
 	tr_te[, source_shared := ifelse(grepl("shared", source), 1, 0)]
 	tr_te[, source_platform := ifelse(grepl("login", source), 1, 0)]
-	tr_te[, source_depth := str_count(source, '.')]
-	tr_te[, path_depth := str_count(referralPath, '/')]
+	tr_te[, source_depth := str_count(source, '\\.')]
+	tr_te[, source_length := nchar(source)]
+	tr_te[, source_complexity := source_depth/source_length]
+	tr_te[, path_depth := str_count(referralPath, '\\/')]
+	tr_te[, path_length := nchar(referralPath)]
+	tr_te[, path_complexity := path_depth/path_length]
+	tr_te[, is_path_direct := ifelse(referralPath == "/", 1, 0)]
 	# tr_te[,which(unlist(lapply(tr_te, function(x)!all(is.na(x))))),with=F]
 
 	# Manual Combinations
