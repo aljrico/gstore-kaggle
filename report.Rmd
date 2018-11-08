@@ -28,12 +28,17 @@ library(tidyverse)
 library(data.table)
 library(jsonlite)
 library(lubridate)
+library(magrittr)
 
 library(moments)
 library(caret)
 library(xgboost)
 
-library(GGally)
+library(dataPreparation)
+library(mlr)
+library(stringr)
+library(rsample)
+library(rlist)
 
 library(harrypotter)
 ```
@@ -68,7 +73,7 @@ flatten <- function(x){
   return(output)
 }
 
-train <- read_csv("data/train.csv")  %>% flatten() %>% data.table()
+train <- read_csv("data/train.csv") %>% sample_n(1e4) %>% flatten() %>% data.table()
 test  <- read_csv("data/test.csv")   %>%  flatten() %>% data.table()
 ```
 
@@ -324,6 +329,8 @@ Such a small pvalue is just saying _hell no_, they are not the same distribution
 
 ## adContent
 
+The straightforward variable that most marketing teams rush to look at is the `adContent`. Which ad the user has been shown to? Did it affect the purchase? Are there some ads more efficient than others?
+
 ```{r}
 train_class %>% 
 	group_by(adContent, target_class) %>% 
@@ -332,18 +339,92 @@ train_class %>%
 	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
 	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
-	xlab("Channel Grouping") +
+	xlab("Ad Content") +
+	ylab("")
+```
+
+Firstly, the vast majority of sessions didn't show any ad. Or that is what I understand from the `NA` in this variable. If we remove the missing values, we end up with something a bit more clear, but not clear enough.
+
+```{r}
+train_class %>% 
+	select(adContent, target_class) %>% 
+	na.omit() %>% 
+	group_by(adContent, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(adContent, -value))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Ad Content") +
+	ylab("")
+```
+
+Actually, does showing an ad have any effect whatsoever?
+
+```{r}
+train_class %>% 
+	mutate(adContent = ifelse(is.na(adContent), "Yes", "No")) %>% 
+	select(adContent, target_class) %>% 
+	na.omit() %>% 
+	group_by(adContent, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(adContent, -value))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Saw any ad?") +
 	ylab("")
 
 train_class %>% 
+	mutate(adContent = ifelse(is.na(adContent), "Yes", "No")) %>% 
 	ggplot(aes(x = adContent, fill = as.factor(target_class))) +
 	geom_bar(colour = "black", position = "fill") +
 	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
 	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
-	xlab("Channel Grouping") +
+	xlab("Saw any ad?") +
 	ylab("")
 ```
 
+In general, nope. Showing whatever ad you have to random customers is not going to get any effect at all. That doesn't mean that some of them might have a positive effect whereas others negative. Maybe if we split this by categories we can understand it.
+
+But we have far too many categories in order to draw any useful conclusions. Why? Because the quantity for most of them is negligible. I'd rather wrap them up in broader categories in order to get anything a bit more interesting. 
+
+### Keyword Ads
+
+The first _keyword_ (yikes) that I stopped at it's been `KeyWord`. There are many ads that are keyword-oriented. Are they useful?
+
+```{r}
+train_class %>% 
+	select(adContent, target_class) %>% 
+	na.omit() %>% 
+	mutate(keyword_ad = ifelse(grepl("KeyWord", adContent), "Yes", "No")) %>% 
+	select(keyword_ad, target_class) %>% 
+	group_by(keyword_ad, target_class) %>% 
+	summarise(value = n()) %>% 
+	ggplot(aes(y = value, x = reorder(keyword_ad, -value))) +
+	geom_col(colour = "black", aes(fill = as.factor(target_class))) +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Keyword-oriented Ad?") +
+	ylab("")
+	
+
+train_class %>% 
+		select(adContent, target_class) %>% 
+	na.omit() %>% 
+		mutate(keyword_ad = ifelse(grepl("KeyWord", adContent), "Yes", "No")) %>% 
+	select(keyword_ad, target_class) %>% 
+	ggplot(aes(x = keyword_ad, fill = as.factor(target_class))) +
+	geom_bar(colour = "black", position = "fill") +
+	theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+	scale_fill_hp(name = "Payed?", discrete = TRUE, house = "Gryffindor") +
+	xlab("Keyword-oriented Ad?") +
+	ylab("")
+```
+
+If anything, I'd say that showing keyword-oriented ads could be misproductive. Honestly, though, what we are really seeing is that the difference is negligible.
+
+I might keep looking, but I don't see right now any other cohort that could be interesting from this feature. I'd simply drop it.
 
 
 ## channelGrouping
@@ -425,10 +506,10 @@ We should remember that _Chrome_ is - hands down - the most used browser both in
 
 For now, I would just build a feature of type boolean that tracks whether the customer is using `Chrome` or not, and leave it there.
 
-## Source/Medium variable
+## Source & Medium
 
 
-## Medium
+### Medium
 
 ```{r}
 train_class %>% 
@@ -452,7 +533,7 @@ train_class %>%
 
 We could appreciate some slight diffferents based on the medium through which the custimers arrived to the store, and we can see that there are some mediums more effective than others. If I was working in the _Analytics_ team of the GStore, I would recommend them to keep the `referral` system. It leads a lot of traffic, and impressively effective, compared to the others. The _path_ of this referral is something that we are going to study in more detail later on.
 
-## Source
+### Source
 
 ```{r}
 train_class %>% 
@@ -488,7 +569,7 @@ On the other hand, we have the _Source_. Which tells from which place the traffi
 
 See that the source `mail.googleplex.com` is incredibly efficient. It streams a lot of traffic and almost everyone is paying something. Even though we have the data rebalanced, that is impressive. On the contrary, `youtubecom` seems like a poor source to drag customers from.
 
-## Source/Medium Variable
+### Source/Medium Variable
 
 In [this](https://www.kaggle.com/erikbruin/google-analytics-eda-lightgbm-screenshots) fantastic Kernel, I saw that the author created a new variable combining both the `Source` and the `Medium`, which could be a significant feature for a model.
 
@@ -552,7 +633,7 @@ train_class$referralPath %>% unique() %>% length()
 train_class$referralPath %>% unique() %>% sample(15)
 ```
 
-## #Length
+### Length
 
 That does not mean that these variables are useless, we can draw interesting insights out of them and build useful features. The first thing that caught my eye was how variable the length of this values seem to be. Look at them, you have some of them with the length of a simple word, whereas others are as big as whole sentences. Let's take a look at that.
 
@@ -925,6 +1006,8 @@ feature_engineering <- function(tr_te, models = NULL, tri = 0){
 	tr_te[, year := date %>% year()]
 	tr_te[, month := date %>% month()]
 	tr_te[, hour := as.numeric(hour(as_datetime(visitStartTime)))]
+	tr_te[, channel_referral := ifelse(channelGrouping == "Referral", 1, 0)]
+	tr_te[, channel_social := ifelse(channelGrouping == "Social", 1, 0)]
 	tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
 	tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
 	tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
@@ -980,6 +1063,19 @@ feature_engineering <- function(tr_te, models = NULL, tri = 0){
 
 	# Time Features
 		cat("... Time Features ... \n")
+	create_time_fea <- function(fun = lag, n = 1){
+		tr_tmp <- tr_te %>% dplyr::slice(tri) %>% data.table()
+		te_tmp <- tr_te %>% dplyr::slice(-tri) %>% data.table()
+		
+		tr_tmp[, time_var := (date - fun(date, n)) %>% as.integer()/3600]
+		te_tmp[, time_var := (date - fun(date, n)) %>% as.integer()/3600]
+		
+		output <- c(tr_tmp$time_var, te_tmp$time_var)
+		
+		rm(tr_tmp, te_tmp)
+		return(output)
+	}
+		
 	for (i in 1:5) {
 		tr_te[str_c("next_sess", i)] <- create_time_fea(lag, i)
 		tr_te[str_c("prev_sess", i)] <- create_time_fea(lead, i)
@@ -1014,11 +1110,18 @@ feature_engineering <- function(tr_te, models = NULL, tri = 0){
 	if(length(constant_columns > 0)) tr_te <- subset(tr_te,select = -c(constant_columns)) %>% as_tibble()
 
 	tr_te[is.na(tr_te)] <- 0
+	
+	# K Means Features
+		cat("... K-Means Features ... \n")
+	tr_te$kmeans_cluster100 <- kmeans(tr_te, centers = 100) %>% .$cluster %>% as.numeric()
+	tr_te$kmeans_cluster10 <- kmeans(tr_te, centers = 10) %>% .$cluster %>% as.numeric()
+	tr_te$kmeans_cluster2 <- kmeans(tr_te, centers = 2) %>% .$cluster %>% as.numeric()
+	
 	return(tr_te)
 }
 
 # Remove Outliers
-train %>% filter(country != 'Anguilla') %>% data.table()
+train <- train %>% filter(country != 'Anguilla') %>% data.table()
 
 # Define Targets
 y <- log1p(as.numeric(train$transactionRevenue))
@@ -1032,6 +1135,8 @@ te_id <- test$fullVisitorId
 train[, transactionRevenue := NULL]
 train[, campaignCode := NULL]
 train %<>% as_tibble()
+
+has_many_values <- function(x) n_distinct(x) > 1
 
 # Build tr_te
 tr_te <- train %>%
@@ -1050,6 +1155,12 @@ Most of the stuff that you see in there is usual. Typical automatic combinations
 Now we are going to get Folds. What does that mean? Well, in order to prevent [overfitting](https://en.wikipedia.org/wiki/Overfitting) it is common to do what we call [cross validation](https://en.wikipedia.org/wiki/Cross-validation_(statistics)) or _out-of-sample testing_. The thing is to train the model on one data sets and making predictions on another. Trying to predict some data using a model trained on that same data is like asking your grandma who is the most beautiful boy in the world. You'll be told what you want to hear, but deep in your heart you know that the answer is not quite representative. Don't fool yourself, don't overfit. We are going to do this 5 times and average the results.
 
 ```{r}
+get_folds <- function(data, group, v = 5) {
+	group_folds <- group_vfold_cv(data[group], group, v = v)
+	list.zip(tr = tr_ind <- map(group_folds$splits, ~ .x$in_id),
+					 val = val_ind <- map(group_folds$splits, ~ setdiff(1:nrow(data), .x$in_id)))
+}
+
 # Get Folds
 tr_val_ind <- get_folds(train, "fullVisitorId", 5)
 ```
@@ -1156,7 +1267,7 @@ See that the function is build such that you can decide which evaluation metric 
 ## First Iteration: Classificadion Model on Sessions
 
 ```{r}
-test <- xgb.DMatrix(data = data.matrix(tr_te[-tri, ]))
+dtest <- xgb.DMatrix(data = data.matrix(tr_te[-tri, ]))
 pred_tr <- rep(0, length(tri))
 pred_te <- 0
 
@@ -1171,6 +1282,16 @@ tuning_scores <- tune_xgb(train_data = train_tune,
 rm(train_tune);gc()
 ts.plot(tuning_scores$scores)
 
+tuning_scores %>% 
+	melt(id.vars = "scores") %>% 
+	ggplot(aes(y = scores, x = as.factor(value))) +
+	geom_boxplot(aes(fill = variable)) +
+	facet_wrap(variable~.) +
+	scale_fill_hp(discrete = TRUE, house = "Ravenclaw") +
+	theme(legend.position ="none")
+```
+
+```{r}
 m <- which.max(tuning_scores$scores)
 currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
 currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
@@ -1215,14 +1336,160 @@ for (i in seq_along(tr_val_ind)) {
 
 pred_tr <- ifelse(pred_tr < 0, 0, pred_tr)
 pred_te <- ifelse(pred_te < 0, 0, pred_te / length(tr_val_ind))
-pred_class <- pred_te
+
 
 xgb.importance(model = cv) %>% as_tibble() %>% top_n(25, Gain) %>%
 	ggplot(aes(x = reorder(Feature, Gain), y = Gain)) +
-	geom_col() +
-	coord_flip()
+	geom_col(aes(fill = log(Gain))) +
+	coord_flip() +
+	scale_fill_hp(house = "Slytherin", name = "Gain") +
+	xlab("Feature") +
+	ylab("Gain") +
+	ggtitle("Features Importance") +
+	theme(legend.position = "none")
+
+rm(dtest, cv); gc()
+```
+It'salways refreshing to see that some of our crazy ideas happen to be useful.
+
+
+Now we have some predictions. We actually have the estimated probability of users of paying anything at given sessions, and we can use this as a feature for the next model. A model that will actually try to guess _how much_ money the user spends at every session.
+
+So, we now just save up this results for later.
+
+```{r}
+class_pred <- c(pred_tr,pred_te)
+class_pred_te <- pred_te
+```
+
+
+## Second Iteration: Regression Model on Sessions
+
+Now we are getting to the funny stuff. We are building the model that everyone's building. We need to predict a contiuous quantity, we do regression. Is that simple, isn't it? Let's do regression.
+
+But wait a minute. For complexity's sake, I thought that could be interesting to divide this iteration in two layers. One layer is a simple model that is just trained used payer's data. Come on. We've built a classification model already, we should be very proficient at knowing which users are going to be payers. We can get far more precise if we build a model that studies those who actually spent something and try to regress that quantity out of them. Then, using the result of our classification model, we can convert that number to $0$ right away for those who we predict that they won't spend anything.
+
+So we'll build two models. Payers and everyone.
+
+### Payers Model
+
+How do we define the payers training data set? Easy, we just filter those who have paid. 
+
+```{r}
+y_small <- y
+length(y_small) <- nrow(tr_te)
+
+tr_te_small <- 
+	tr_te %>% 
+	mutate(target = y_small) 
+
+tr_small <- which(tr_te_small$target != 0)
+```
+
+Actually is not that easy. Because I spent a lot of time thinking how to divide the training set into validation and actual training with this filtration. What I basically did is creating another index for this intentionally biased training set, and then modify everything that comes after accordingly so we don't screw up the process, either leaving some of the train rows without prediction or by predicting them using a cv model that has been trained with them.
+
+It is ugly as hell, so if you think of a smarter way, let me know please.
+
+
+And so we repeat the process above to tune the model, note that this time is a regression model and that we'v added tweaks in the index.
+
+```{r, echo = TRUE, message = FALSE}
+
+tr_id_small <- c(tr_id,te_id) %>% .[tr_small]
+y_small <- tr_te_small$target
+
+tuning_scores <- tune_xgb(train_data = tr_te_small %>% dplyr::slice(tr_small),
+													target_label = "target",
+													ntrees = 100,
+													objective = "reg:linear",
+													eval_metric = "rmse",
+													fast = TRUE)
+
+tuning_scores %>% 
+	melt(id.vars = "scores") %>% 
+	ggplot(aes(y = scores, x = as.factor(value))) +
+	geom_boxplot(aes(fill = variable)) +
+	facet_wrap(variable~.) +
+	scale_fill_hp(discrete = TRUE, house = "Ravenclaw") +
+	theme(legend.position ="none")
+```
+
+And also repeat the process of actually training the model.
+
+
+```{r}
+m <- which.min(tuning_scores$scores)
+currentSubsampleRate <- tuning_scores[["subsample"]][[m]]
+currentColsampleRate <- tuning_scores[["colsample_bytree"]][[m]]
+lr <- tuning_scores[["lr"]][[m]]
+mtd <- tuning_scores[["mtd"]][[m]]
+mcw <- tuning_scores[["mcw"]][[m]]
+
+ntrees <- 1e3
+
+p <- list(objective = "reg:linear",
+					booster = "gbtree",
+					eval_metric = "rmse",
+					nthread = 4,
+					eta = lr/ntrees,
+					max_depth = mtd,
+					min_child_weight = 30,
+					gamma = 0,
+					subsample = currentSubsampleRate,
+					colsample_bytree = currentColsampleRate,
+					colsample_bylevel = 0.632,
+					alpha = 0,
+					lambda = 0,
+					nrounds = ntrees)
+
+tr_te$fullVisitorId <- c(tr_id,te_id)
+tr_val_ind_small <- get_folds(tr_te[tri,], "fullVisitorId", 2)
+tr_te$fullVisitorId <- NULL
+tr_te_small$fullVisitorId <- NULL
+tr_te_small$target <- NULL
+
+dtest <- xgb.DMatrix(data = data.matrix(tr_te[-tri, ]))
+
+pred_tr <- rep(0, length(tri))
+pred_te <- 0
+
+for (i in seq_along(tr_val_ind_small)) {
+	cat("Group fold:", i, "\n")
+
+	tr_ind <- tr_val_ind_small[[i]]$tr %>% intersect(tr_small)
+	val_ind <- tr_val_ind_small[[i]]$val
+	
+
+	dtrain <- xgb.DMatrix(data = data.matrix(tr_te[tr_ind, ]), label = y_small[tr_ind])
+	dval <- xgb.DMatrix(data = data.matrix(tr_te[val_ind, ]), label = y_small[val_ind])
+
+	cv <- xgb.train(p, dtrain, p$nrounds, list(val = dval), print_every_n = 50, early_stopping_rounds = 300)
+
+	pred_tr[val_ind] <- (predict(cv, dval))
+	pred_te <- pred_te + (predict(cv, dtest))
+
+	rm(dtrain, dval, tr_ind, val_ind)
+	gc()
+}
+
+pred_tr <- ifelse(pred_tr < 0, 0, pred_tr)
+pred_te <- ifelse(pred_te < 0, 0, pred_te / length(tr_val_ind))
 
 rm(dtest, cv); gc()
 ```
 
+And with this very simple model, we've got another feature.
+
+```{r}
+payers_pred <- c(pred_tr,pred_te)
+payers_pred_te <- pred_te
+```
+
+
 To be continued... 
+
+
+```{r}
+
+```
+

@@ -16,6 +16,8 @@ feature_engineering <- function(tr_te, models = NULL, tri = 0){
 	tr_te[, year := date %>% year()]
 	tr_te[, month := date %>% month()]
 	tr_te[, hour := as.numeric(hour(as_datetime(visitStartTime)))]
+	tr_te[, channel_referral := ifelse(channelGrouping == "Referral", 1, 0)]
+	tr_te[, channel_social := ifelse(channelGrouping == "Social", 1, 0)]
 	tr_te[, browser := ifelse(browser %in% c("Safari", "Firefox"), "mainstream", ifelse(browser == "Chrome", 'Chrome', "Other"))]
 	tr_te[, is_chrome_the_browser := ifelse(browser == "Chrome", 1, 0) %>% as.numeric()]
 	tr_te[, source_from_googleplex := ifelse(source == 'mail.googleplex.com', 1, 0) %>% as.numeric()]
